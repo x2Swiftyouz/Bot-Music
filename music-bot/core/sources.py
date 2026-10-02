@@ -94,8 +94,10 @@ class Track:
     _stream_at: float = field(default=0.0, repr=False, compare=False)
     _headers: dict = field(default_factory=dict, repr=False, compare=False)
     _protocol: str = field(default="", repr=False, compare=False)
+    _heatmap: tuple = field(default=(), repr=False, compare=False)   # YouTube "most replayed"
+    _chapters: tuple = field(default=(), repr=False, compare=False)  # ((start, title), ...)
 
-    RUNTIME = ("_stream", "_stream_at", "_headers", "_protocol")
+    RUNTIME = ("_stream", "_stream_at", "_headers", "_protocol", "_heatmap", "_chapters")
 
     def fmt_duration(self) -> str:
         return fmt_time(self.duration) if self.duration else "LIVE/?"
@@ -337,6 +339,9 @@ async def resolve_stream(track: Track) -> str:
     track._stream_at = time.time()
     track._headers = dict(info.get("http_headers") or {})
     track._protocol = info.get("protocol") or ""
+    track._heatmap = tuple(float(h.get("value") or 0) for h in info.get("heatmap") or ())
+    track._chapters = tuple((float(c.get("start_time") or 0), str(c.get("title") or ""))
+                            for c in info.get("chapters") or () if c.get("title"))
 
     return track._stream
 

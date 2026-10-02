@@ -66,12 +66,24 @@ OPUS_LOADED = _load_opus()
 LOOP_MODES = ("off", "track", "queue")
 
 
-def _today() -> datetime.date:
+def _now() -> datetime.datetime:
     try:
         from zoneinfo import ZoneInfo
-        return datetime.datetime.now(ZoneInfo(config.TIMEZONE)).date()
+        return datetime.datetime.now(ZoneInfo(config.TIMEZONE))
     except Exception:  # no tz database (Windows without tzdata)
-        return datetime.date.today()
+        return datetime.datetime.now()
+
+
+def _today() -> datetime.date:
+    return _now().date()
+
+
+def clock_after(seconds: float) -> str:
+    """Wall-clock time (TIMEZONE) this many seconds from now, e.g. '21:45'."""
+    return (_now() + datetime.timedelta(seconds=max(seconds, 0))).strftime("%H:%M")
+
+
+TIME_MODES = ("length", "remaining", "clock")
 
 class GuildPlayer:
     def __init__(self, bot: "MusicBot", guild: discord.Guild, settings: dict):
@@ -90,7 +102,8 @@ class GuildPlayer:
         self.vote_skip_enabled = bool(settings["vote_skip"])
 
         self.compact = bool(settings.get("compact"))
-        self.time_remaining = bool(settings.get("time_remaining"))
+        # 0 = track length, 1 = time left, 2 = clock time it ends (column kept for old DBs)
+        self.time_format = int(settings.get("time_remaining") or 0) % 3
         self.card_theme = settings.get("card_theme") or "blur"
         self.card_layout = settings.get("card_layout") or "wide"
         self.normalize = bool(settings.get("normalize"))
@@ -105,6 +118,7 @@ class GuildPlayer:
         self._wd_frames = -1
         self._wd_since = 0.0
         self.has_card = False
+        self.card_name = ""           # filename of the card attached to the panel
         self.loading = False          # panel shows the loading card while a track resolves
         self._card_key = None         # card state of the last uploaded image
         self._card_at = 0.0
@@ -144,6 +158,10 @@ class GuildPlayer:
     @property
     def vc(self) -> Optional[discord.VoiceClient]:
         return self.guild.voice_client  # type: ignore[return-value]
+
+    @property
+    def time_remaining(self) -> bool:
+        return self.time_format == 1
 
     @property
     def is_paused(self) -> bool:
@@ -733,10 +751,20 @@ class GuildPlayer:
 
     async def _prefetch(self):
         if self.queue:
+            nxt = self.queue[0]
             try:
-                await resolve_stream(self.queue[0])
+                await resolve_stream(nxt)
             except Exception as exc:
                 log.debug("Prefetch failed: %s", exc)
+                return
+            if config.MUSIC_CARD:
+                # Pre-render the next card's heavy part (cover, blur, title) and fetch the
+                # cover its "up next" row will show, so the next panel appears at once.
+                from core.card import fetch_art, warm
+                layout = "mini" if self.compact else self.card_layout
+                await warm(nxt, self.card_theme, layout)
+                if len(self.queue) > 1:
+                    await fetch_art(self.queue[1].thumbnail)
 
     # ------------------------------------------------------ status & panel
     async def _set_status(self, track: Optional[Track]):
@@ -763,20 +791,34 @@ class GuildPlayer:
     # ------------------------------------------------------------- cards
     def card_state(self, mode: str = "play", reason: str = ""):
         from core.card import CardState
+        t = self.current
+        end_clock = ""
+        if self.time_format == 2 and t and t.duration:
+            end_clock = clock_after(t.duration - self.position)
+        nxt = self.queue[0] if self.queue else None
         return CardState(
             position=self.position, volume=int(round(self.volume * 100)), loop=self.loop_mode,
-            queue_len=len(self.queue), paused=self.is_paused, remaining=self.time_remaining,
-            next_title=self.queue[0].title if self.queue else "", hot=self.track_plays,
-            birthday=self.requester_birthday, blink=self._blink, theme=self.card_theme,
-            layout=self.card_layout, mode=mode, reason=reason)
+            queue_len=len(self.queue), paused=self.is_paused,
+            time_mode=TIME_MODES[self.time_format], end_clock=end_clock,
+            next_title=nxt.title if nxt else "", next_thumb=(nxt.thumbnail or "") if nxt else "",
+            hot=self.track_plays, birthday=self.requester_birthday, blink=self._blink,
+            theme=self.card_theme, layout="mini" if self.compact else self.card_layout,
+            mode=mode, reason=reason)
 
     async def card_file(self, mode: str = "play", reason: str = "") -> Optional[discord.File]:
-        """Render the current track's card (None when cards are off or rendering failed)."""
-        if not config.MUSIC_CARD or self.compact or not self.current:
+        """Render the current track's card (None when cards are off or rendering failed).
+        The compact panel gets the slim mini card."""
+        if not config.MUSIC_CARD or not self.current:
             return None
-        from core.card import FILENAME, make_card
-        data = await make_card(self.current, self.card_state(mode, reason))
-        return discord.File(io.BytesIO(data), filename=FILENAME) if data else None
+        from core.card import alt_text, make_card, new_filename
+        state = self.card_state(mode, reason)
+        if self.compact and mode != "play":
+            return None  # loading / error stay text on the compact panel
+        data = await make_card(self.current, state)
+        if not data:
+            return None
+        return discord.File(io.BytesIO(data), filename=new_filename(),
+                            description=alt_text(self.current, state))
 
     async def _card_file(self, tick: bool = False, mode: str = "play",
                          reason: str = "") -> Optional[discord.File]:
@@ -794,6 +836,7 @@ class GuildPlayer:
         card = await self.card_file(mode, reason)
         if card:
             self._card_key, self._card_at = key, now
+            self.card_name = card.filename
         return card
 
     async def _load_badges(self, track: Track, count: bool):
@@ -969,7 +1012,7 @@ class GuildPlayer:
         except discord.NotFound:
             self.panel_message = None
         except discord.HTTPException:
-            pass
+            self._card_key = None  # the upload may be lost: send a fresh card next time
 
     async def _panel_loop(self):
         while not self.destroyed:

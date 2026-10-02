@@ -156,7 +156,7 @@ class Prefix(commands.Cog):
             raise UserError("ไม่มีเพลงเล่นอยู่")
         card = await p.card_file()
         kw = {"file": card} if card else {}
-        await self._say(msg, embed=build_now_playing(p, card=card is not None),
+        await self._say(msg, embed=build_now_playing(p, card=card.filename if card else ""),
                         view=self.bot.panel_view, **kw)
 
     async def cmd_lyrics(self, msg, args):

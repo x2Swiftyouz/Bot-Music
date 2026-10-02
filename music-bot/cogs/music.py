@@ -221,7 +221,7 @@ class Music(commands.Cog):
         await inter.response.defer()
         card = await p.card_file()
         kw = {"file": card} if card else {}
-        await inter.followup.send(embed=build_now_playing(p, card=card is not None),
+        await inter.followup.send(embed=build_now_playing(p, card=card.filename if card else ""),
                                   view=self.bot.panel_view, **kw)
 
     @app_commands.command(description="เนื้อเพลงที่กำลังเล่น หรือค้นด้วยชื่อเพลง")

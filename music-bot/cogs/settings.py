@@ -6,7 +6,8 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
-THEME_NAMES = {"blur": "เบลอจากปก", "solid": "สีพื้นจากปก", "minimal": "มินิมอล"}
+THEME_NAMES = {"blur": "เบลอจากปก", "solid": "สีพื้นจากปก", "minimal": "มินิมอล",
+               "polaroid": "โพลารอยด์", "cassette": "เทปคาสเซ็ต", "neon": "นีออน"}
 LAYOUT_NAMES = {"wide": "แนวนอน (จอคอม)", "square": "จัตุรัส (มือถือ)"}
 
 
@@ -44,7 +45,7 @@ class Settings(commands.GroupCog, group_name="settings", group_description="ต�
         await inter.response.send_message(f"โหวตข้าม: {'เปิด' if enabled else 'ปิด'}",
                                           ephemeral=True)
 
-    @app_commands.command(description="Panel แบบย่อสำหรับมือถือ (ปุ่มแถวเดียว ไม่มีการ์ด)")
+    @app_commands.command(description="Panel แบบย่อสำหรับมือถือ (ปุ่มแถวเดียว การ์ดแบบแถบบาง)")
     async def compact(self, inter: discord.Interaction, enabled: bool):
         await self.bot.db.set_setting(inter.guild_id, "compact", int(enabled))
         if p := self._player(inter.guild_id):
@@ -54,13 +55,14 @@ class Settings(commands.GroupCog, group_name="settings", group_description="ต�
         await inter.response.send_message(f"📱 Compact: {'เปิด' if enabled else 'ปิด'}",
                                           ephemeral=True)
 
-    @app_commands.command(description="แสดงเวลาที่เล่นไปแล้ว หรือ เวลาที่เหลือ")
+    @app_commands.command(description="เวลาด้านขวาของแถบเพลง: ความยาว เวลาที่เหลือ หรือเวลาที่จบ")
     @app_commands.choices(mode=[app_commands.Choice(name="ความยาวเพลง (3:57)", value=0),
-                                app_commands.Choice(name="เวลาที่เหลือ (-2:31)", value=1)])
+                                app_commands.Choice(name="เวลาที่เหลือ (-2:31)", value=1),
+                                app_commands.Choice(name="เวลาที่จบ (จบ 21:45)", value=2)])
     async def timeformat(self, inter: discord.Interaction, mode: app_commands.Choice[int]):
         await self.bot.db.set_setting(inter.guild_id, "time_remaining", mode.value)
         if p := self._player(inter.guild_id):
-            p.time_remaining = bool(mode.value)
+            p.time_format = mode.value
             await p.update_panel()
         await inter.response.send_message(f"⏱ เวลา: {mode.name}", ephemeral=True)
 
@@ -122,7 +124,8 @@ class Settings(commands.GroupCog, group_name="settings", group_description="ต�
         e.add_field(name="เสียงเริ่มต้น", value=f"{s['volume']}%")
         e.add_field(name="วนซ้ำ", value=s["loop_mode"])
         e.add_field(name="Compact", value=on(s["compact"]))
-        e.add_field(name="เวลา", value="เวลาที่เหลือ" if s["time_remaining"] else "ความยาวเพลง")
+        e.add_field(name="เวลา", value=("ความยาวเพลง", "เวลาที่เหลือ", "เวลาที่จบ")[
+            int(s["time_remaining"] or 0) % 3])
         e.add_field(name="ความดังเท่ากัน", value=on(s["normalize"]))
         e.add_field(name="ห้องขอเพลง",
                     value=f"<#{s['request_channel']}>" if s["request_channel"] else "ปิด")

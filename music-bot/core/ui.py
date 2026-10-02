@@ -1,11 +1,11 @@
 """Embeds and interactive views (buttons, pagination, select menus)."""
 
+import io
 import time
 from typing import TYPE_CHECKING, Awaitable, Callable, Optional
 
 import discord
 
-from core.card import FILENAME
 from core.checks import UserError, control
 from core.lyrics import Lyrics
 from core.sources import SOURCE_COLORS, Track, detect_source, fmt_time
@@ -31,18 +31,22 @@ def track_color(track: Track) -> int:
 
 def _time_line(p: "GuildPlayer") -> str:
     t, pos = p.current, p.position
-    right = t.fmt_duration()
-    if p.time_remaining and t.duration:
-        right = "-" + fmt_time(t.duration - pos)
-    return f"`{fmt_time(pos)}` {progress_bar(pos, t.duration)} `{right}`"
+    right = f"`{t.fmt_duration()}`"
+    if p.time_format == 1 and t.duration:
+        right = f"`-{fmt_time(t.duration - pos)}`"
+    elif p.time_format == 2 and t.duration:
+        # Discord shows this timestamp in each viewer's own time zone
+        right = f"จบ <t:{int(time.time() + t.duration - pos)}:t>"
+    return f"`{fmt_time(pos)}` {progress_bar(pos, t.duration)} {right}"
 
 
-def build_now_playing(p: "GuildPlayer", card: Optional[bool] = None) -> discord.Embed:
-    """card: whether a card image is attached (default: the panel's own state)."""
+def build_now_playing(p: "GuildPlayer", card: Optional[str] = None) -> discord.Embed:
+    """card: filename of the attached card image ("" = none, default: the panel's own)."""
     t = p.current
     if not t:
         return build_idle_embed()
-    has_card = p.has_card if card is None else card
+    card_name = (p.card_name if p.has_card else "") if card is None else card
+    has_card = bool(card_name)
     e = discord.Embed(
         title=t.title[:250],
         url=t.url if t.url.startswith("http") else None,
@@ -51,7 +55,7 @@ def build_now_playing(p: "GuildPlayer", card: Optional[bool] = None) -> discord.
     if p.loading:
         e.set_author(name="⏳ กำลังโหลด…")
         if has_card:
-            e.set_image(url=f"attachment://{FILENAME}")
+            e.set_image(url=f"attachment://{card_name}")
         elif t.thumbnail:
             e.set_thumbnail(url=t.thumbnail)
         e.description = f"-# ขอโดย {t.requester_name or '-'}"
@@ -65,14 +69,16 @@ def build_now_playing(p: "GuildPlayer", card: Optional[bool] = None) -> discord.
             e.description += f" · ถัดไป: {p.queue[0].title[:50]}"
         if karaoke := live_lyrics_text(p):
             e.description += "\n" + karaoke
-        if t.thumbnail:
+        if has_card:  # slim mini card
+            e.set_image(url=f"attachment://{card_name}")
+        elif t.thumbnail:
             e.set_thumbnail(url=t.thumbnail)
         e.set_author(name=state)
         return e
 
     e.set_author(name=state)
     if has_card:  # the card already shows artist, progress and badges
-        e.set_image(url=f"attachment://{FILENAME}")
+        e.set_image(url=f"attachment://{card_name}")
         e.description = _time_line(p)
     else:
         if t.thumbnail:
@@ -275,6 +281,7 @@ class QueueView(PagesView):
         self.search_btn.label = "ล้างการค้นหา" if self.query else "ค้นหา"
         self.search_btn.emoji = "✖️" if self.query else "🔍"
         self.mine_btn.disabled = self.dedupe_btn.disabled = not self.p.queue
+        self.image_btn.disabled = not queue_items(self.p, self.query)
 
     def _refresh(self):
         self.pages = build_queue_pages(self.p, self.PER_PAGE, self.query)
@@ -368,6 +375,38 @@ class QueueView(PagesView):
                 raise UserError("ไม่มีเพลงซ้ำในคิว")
             return f"♻️ ลบเพลงซ้ำ {n} เพลง (ใช้ /undo เพื่อย้อน)"
         await self._apply(inter, "dedupe", run)
+
+
+    @discord.ui.button(emoji="🖼", label="รูปคิว", style=discord.ButtonStyle.secondary, row=2)
+    async def image_btn(self, inter: discord.Interaction, _):
+        """Queue card: the next songs on this page as one shareable image."""
+        await inter.response.defer(thinking=True)
+        data = await build_queue_card(self.p, self.query, self.index * self.PER_PAGE)
+        if not data:
+            return await inter.followup.send("สร้างรูปไม่ได้ ลองใหม่", ephemeral=True)
+        from core.card import new_filename
+        name = new_filename("queue")
+        await inter.followup.send(file=discord.File(
+            io.BytesIO(data), filename=name,
+            description=f"คิวเพลง {len(self.p.queue)} เพลง"))
+
+
+async def build_queue_card(p: "GuildPlayer", query: str = "", start: int = 0,
+                           count: int = 5) -> Optional[bytes]:
+    from core.card import make_queue_card
+    from core.player import clock_after
+    items = queue_items(p, query)[start:start + count]
+    rows = []
+    for pos, t in items:
+        eta = p.eta(pos - 1)
+        when = "ถัดไป" if pos == 1 else (f"เล่น {clock_after(eta)}" if eta is not None else "")
+        rows.append({"pos": pos, "title": t.title, "artist": t.artist,
+                     "requester": t.requester_name or "-", "duration": t.fmt_duration(),
+                     "when": when})
+    remain = p.total_remaining()
+    header = f"{len(p.queue)} เพลงในคิว" + (f" · ค้น \"{query}\"" if query else "")
+    sub = f"รวม {fmt_time(remain)} · จบ {clock_after(remain)}" if remain else ""
+    return await make_queue_card(rows, header, sub, [t for _, t in items])
 
 
 class QueueSearchModal(discord.ui.Modal, title="ค้นหาในคิว"):
