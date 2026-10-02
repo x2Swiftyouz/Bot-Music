@@ -77,14 +77,22 @@ def build_now_playing(p: "GuildPlayer", card: Optional[str] = None) -> discord.E
         e.set_author(name=state)
         return e
 
+    if has_card:
+        # The card already shows title, artist, requester, volume, progress and next:
+        # under it only a one-line clickable title, live lyrics if on, and the status line.
+        slim = discord.Embed(color=e.color)
+        title = t.title[:200]
+        link = f"[{title}]({t.url})" if t.url.startswith("http") else title
+        slim.description = f"{'⏸' if p.is_paused else '▶️'} **{link}**"
+        slim.set_image(url=f"attachment://{card_name}")
+        if karaoke := live_lyrics_text(p):
+            slim.add_field(name="🎙 เนื้อเพลงสด", value=karaoke, inline=False)
+        slim.set_footer(text=status_line(p))
+        return slim
     e.set_author(name=state)
-    if has_card:  # the card already shows artist, progress and badges
-        e.set_image(url=f"attachment://{card_name}")
-        e.description = _time_line(p)
-    else:
-        if t.thumbnail:
-            e.set_thumbnail(url=t.thumbnail)
-        e.description = artist + _time_line(p)
+    if t.thumbnail:
+        e.set_thumbnail(url=t.thumbnail)
+    e.description = artist + _time_line(p)
     e.add_field(name="ขอโดย", value=t.requester_name or "-", inline=True)
     if p.queue:
         nxt = p.queue[0]
@@ -712,14 +720,14 @@ SEEK_STEP = 10  # seconds for the ⏪ ⏩ panel buttons
 
 
 class PanelView(discord.ui.View):
-    """Now-playing controls. Persistent (fixed custom_id), state-aware when given a player."""
+    """Now-playing controls, two rows of icons like Groove. Persistent (fixed custom_id),
+    state-aware when given a player. Less used controls live behind ⚙️ (MoreView)."""
 
     def __init__(self, p: Optional["GuildPlayer"] = None):
         super().__init__(timeout=None)
         if p is None:
             return
         self.prev.disabled = not p.history
-        self.shuffle.disabled = len(p.queue) < 2
         self.queue_btn.disabled = not p.queue and not p.current
         if p.is_paused:
             self.pause.emoji = "▶️"
@@ -727,89 +735,133 @@ class PanelView(discord.ui.View):
         if p.loop_mode != "off":
             self.loop.style = discord.ButtonStyle.primary
             self.loop.emoji = "🔂" if p.loop_mode == "track" else "🔁"
-        self.vol_down.disabled = p.volume <= 0
-        self.vol_up.disabled = p.volume >= 1.5
         seekable = bool(p.current and p.current.duration)
         self.rewind.disabled = self.forward.disabled = not seekable
-        self.lyrics_btn.disabled = self.live_lyrics_btn.disabled = not p.current
-        if p.live_lyrics:
-            self.live_lyrics_btn.style = discord.ButtonStyle.primary
         if not p.current:
-            for item in (self.pause, self.skip, self.vol_down, self.vol_up, self.volume_select):
-                item.disabled = True
-        current = int(round(p.volume * 100))
-        for opt in self.volume_select.options:
-            opt.default = int(opt.value) == current
+            self.pause.disabled = self.skip.disabled = True
 
-    # row 0: transport, row 1: queue and extras, row 2: add / volume / live lyrics,
-    # row 3: volume presets
+    # row 0: transport, row 1: seek / queue / add / more
     @discord.ui.button(emoji="⏮", style=discord.ButtonStyle.secondary, custom_id="mb:prev", row=0)
     async def prev(self, inter, _):
         await act_prev(inter)
-
-    @discord.ui.button(emoji="⏪", style=discord.ButtonStyle.secondary, custom_id="mb:rewind", row=0)
-    async def rewind(self, inter, _):
-        await act_seek(inter, -SEEK_STEP)
 
     @discord.ui.button(emoji="⏯", style=discord.ButtonStyle.secondary, custom_id="mb:pause", row=0)
     async def pause(self, inter, _):
         await act_pause(inter)
 
-    @discord.ui.button(emoji="⏩", style=discord.ButtonStyle.secondary, custom_id="mb:forward", row=0)
-    async def forward(self, inter, _):
-        await act_seek(inter, SEEK_STEP)
-
     @discord.ui.button(emoji="⏭", style=discord.ButtonStyle.secondary, custom_id="mb:skip", row=0)
     async def skip(self, inter, _):
         await act_skip(inter)
 
-    @discord.ui.button(emoji="⏹", style=discord.ButtonStyle.secondary, custom_id="mb:stop", row=1)
+    @discord.ui.button(emoji="⏹", style=discord.ButtonStyle.secondary, custom_id="mb:stop", row=0)
     async def stop_btn(self, inter, _):
         await act_stop(inter)
 
-    @discord.ui.button(emoji="🔁", style=discord.ButtonStyle.secondary, custom_id="mb:loop", row=1)
+    @discord.ui.button(emoji="🔁", style=discord.ButtonStyle.secondary, custom_id="mb:loop", row=0)
     async def loop(self, inter, _):
         await _act(inter, lambda p: f"วนซ้ำ: {LOOP_ICON[p.cycle_loop()]}", "loop")
 
-    @discord.ui.button(emoji="🔀", style=discord.ButtonStyle.secondary, custom_id="mb:shuffle", row=1)
-    async def shuffle(self, inter, _):
-        await _act(inter, lambda p: (p.shuffle(), "🔀 สลับคิวแล้ว (ใช้ /undo เพื่อย้อน)")[1],
-                   "shuffle")
+    @discord.ui.button(emoji="⏪", style=discord.ButtonStyle.secondary, custom_id="mb:rewind", row=1)
+    async def rewind(self, inter, _):
+        await act_seek(inter, -SEEK_STEP)
+
+    @discord.ui.button(emoji="⏩", style=discord.ButtonStyle.secondary, custom_id="mb:forward", row=1)
+    async def forward(self, inter, _):
+        await act_seek(inter, SEEK_STEP)
 
     @discord.ui.button(emoji="📜", style=discord.ButtonStyle.secondary, custom_id="mb:queue", row=1)
     async def queue_btn(self, inter, _):
         await act_queue(inter)
 
-    @discord.ui.button(emoji="🎤", style=discord.ButtonStyle.secondary, custom_id="mb:lyrics", row=1)
-    async def lyrics_btn(self, inter, _):
-        await act_lyrics(inter)
-
-    @discord.ui.button(emoji="➕", label="เพิ่มเพลง", style=discord.ButtonStyle.secondary,
-                       custom_id="mb:add", row=2)
+    @discord.ui.button(emoji="➕", style=discord.ButtonStyle.secondary, custom_id="mb:add", row=1)
     async def add_btn(self, inter, _):
         await act_add(inter)
 
+    @discord.ui.button(emoji="⚙️", style=discord.ButtonStyle.secondary, custom_id="mb:more", row=1)
+    async def more_btn(self, inter, _):
+        await act_more(inter)
+
+
+def build_more_embed(p: "GuildPlayer") -> discord.Embed:
+    e = discord.Embed(title="⚙️ ตัวเลือกเพิ่มเติม", color=SOURCE_COLORS["other"])
+    e.description = status_line(p)
+    return e
+
+
+async def act_more(inter):
+    p = inter.client.players.get(inter.guild_id)
+    if not p or not p.current:
+        return await inter.response.send_message("ไม่มีเพลงเล่นอยู่", ephemeral=True)
+    await inter.response.send_message(embed=build_more_embed(p), view=MoreView(p), ephemeral=True)
+
+
+async def _more(inter, action: Callable[["GuildPlayer"], Optional[str]], label: str):
+    """Controls from the ⚙️ menu. In the menu itself the menu refreshes in place; the same
+    custom_ids on an old panel (before the two-row layout) behave like panel buttons."""
+    message = getattr(inter, "message", None)
+    if not (message and message.flags.ephemeral):
+        return await _act(inter, action, label)
+    try:
+        p = control(inter)
+    except UserError as exc:
+        return await inter.response.send_message(str(exc), ephemeral=True)
+    text = action(p)
+    await inter.response.edit_message(content=text, embed=build_more_embed(p), view=MoreView(p))
+    await audit_inter(inter, label)
+    await p.update_panel()
+
+
+class MoreView(discord.ui.View):
+    """⚙️ menu (only the person who pressed it sees it). Persistent so old panels that
+    still show these buttons keep working after a restart."""
+
+    def __init__(self, p: Optional["GuildPlayer"] = None):
+        super().__init__(timeout=None)
+        if p is None:
+            return
+        self.vol_down.disabled = p.volume <= 0
+        self.vol_up.disabled = p.volume >= 1.5
+        self.shuffle.disabled = len(p.queue) < 2
+        self.lyrics_btn.disabled = self.live_lyrics_btn.disabled = not p.current
+        if p.live_lyrics:
+            self.live_lyrics_btn.style = discord.ButtonStyle.primary
+        current = int(round(p.volume * 100))
+        for opt in self.volume_select.options:
+            opt.default = int(opt.value) == current
+
     @discord.ui.button(emoji="🔉", label="-10", style=discord.ButtonStyle.secondary,
-                       custom_id="mb:voldown", row=2)
+                       custom_id="mb:voldown", row=0)
     async def vol_down(self, inter, _):
-        await _act(inter, lambda p: (p.set_volume(int(p.volume * 100) - 10), None)[1], "volume -10")
+        await _more(inter, lambda p: (p.set_volume(int(p.volume * 100) - 10), None)[1], "volume -10")
 
     @discord.ui.button(emoji="🔊", label="+10", style=discord.ButtonStyle.secondary,
-                       custom_id="mb:volup", row=2)
+                       custom_id="mb:volup", row=0)
     async def vol_up(self, inter, _):
-        await _act(inter, lambda p: (p.set_volume(int(p.volume * 100) + 10), None)[1], "volume +10")
+        await _more(inter, lambda p: (p.set_volume(int(p.volume * 100) + 10), None)[1], "volume +10")
 
-    @discord.ui.button(emoji="🎙", label="เนื้อสด", style=discord.ButtonStyle.secondary,
-                       custom_id="mb:livelyrics", row=2)
+    @discord.ui.button(emoji="🔀", style=discord.ButtonStyle.secondary, custom_id="mb:shuffle", row=0)
+    async def shuffle(self, inter, _):
+        await _more(inter, lambda p: (p.shuffle(), "🔀 สลับคิวแล้ว (ใช้ /undo เพื่อย้อน)")[1],
+                    "shuffle")
+
+    @discord.ui.button(emoji="🎤", style=discord.ButtonStyle.secondary, custom_id="mb:lyrics", row=0)
+    async def lyrics_btn(self, inter, _):
+        await act_lyrics(inter)
+
+    @discord.ui.button(emoji="🎙", style=discord.ButtonStyle.secondary, custom_id="mb:livelyrics",
+                       row=0)
     async def live_lyrics_btn(self, inter, _):
-        await act_live_lyrics(inter)
+        def run(p):
+            on = p.toggle_live_lyrics()
+            return "🎙 เปิดเนื้อเพลงสดบน panel" if on else "ปิดเนื้อเพลงสดแล้ว"
+        await _more(inter, run, "live lyrics")
 
-    @discord.ui.select(placeholder="🔊 ระดับเสียง", custom_id="mb:volpreset", row=3,
+    @discord.ui.select(placeholder="🔊 ระดับเสียง", custom_id="mb:volpreset", row=1,
                        options=[discord.SelectOption(label=f"{v}%", value=str(v))
                                 for v in VOLUME_PRESETS])
     async def volume_select(self, inter, select: discord.ui.Select):
         value = int(select.values[0])
-        await _act(inter, lambda p: (p.set_volume(value), None)[1], f"volume {value}")
+        await _more(inter, lambda p: (p.set_volume(value), None)[1], f"volume {value}")
 
 
 class CompactPanelView(discord.ui.View):

@@ -21,7 +21,7 @@ from core import card, clean, lyrics
 from core.db import Database
 from core.player import GuildPlayer
 from core.sources import spotify
-from core.ui import CompactPanelView, PanelView
+from core.ui import CompactPanelView, MoreView, PanelView
 
 logging.basicConfig(
     level=logging.INFO,
@@ -62,6 +62,7 @@ class MusicBot(commands.Bot):
         self.panel_view = PanelView()
         self.add_view(self.panel_view)  # buttons keep working after restart
         self.add_view(CompactPanelView())
+        self.add_view(MoreView())
         for ext in EXTENSIONS:
             await self.load_extension(ext)
         self.tree.on_error = self.on_app_error
