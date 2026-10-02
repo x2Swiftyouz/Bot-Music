@@ -66,6 +66,42 @@ OPUS_LOADED = _load_opus()
 LOOP_MODES = ("off", "track", "queue")
 
 
+def _safe_pipe_writer(self, source) -> None:
+    """discord.py's pipe writer, but closing FFmpeg's stdin can never raise.
+
+    On skip/stop discord.py kills FFmpeg and closes stdin from another thread while
+    this thread may be closing it too. Python 3.14 then raises "ValueError:
+    PyMemoryView_FromBuffer(): info->buf must not be NULL" from close(), which
+    discord.py does not catch. The error is harmless but printed a traceback."""
+    while self._process:
+        data = source.read(self.BLOCKSIZE)
+        if not data:
+            try:
+                if self._stdin is not None:
+                    self._stdin.close()
+            except Exception:
+                pass  # already closed by the other side
+            return
+        try:
+            if self._stdin is not None:
+                self._stdin.write(data)
+        except Exception:
+            log.debug("pipe write ended for %s", self, exc_info=True)
+            try:
+                self._process.terminate()
+            except Exception:
+                pass
+            return
+
+
+class _PCMAudio(discord.FFmpegPCMAudio):
+    _pipe_writer = _safe_pipe_writer
+
+
+class _OpusAudio(discord.FFmpegOpusAudio):
+    _pipe_writer = _safe_pipe_writer
+
+
 def _now() -> datetime.datetime:
     try:
         from zoneinfo import ZoneInfo
@@ -116,6 +152,7 @@ class GuildPlayer:
         self._undo: deque[tuple[str, list[Track]]] = deque(maxlen=5)
         self._preload: Optional[tuple[Track, discord.AudioSource, str]] = None
         self._preload_task: Optional[asyncio.Task] = None
+        self._prefetched: Optional[Track] = None  # queue head already looked up
         self._wd_frames = -1
         self._wd_since = 0.0
         self.has_card = False
@@ -460,15 +497,15 @@ class GuildPlayer:
         src_arg = reader if pipe else track._stream
         try:
             if OPUS_LOADED:
-                raw = discord.FFmpegPCMAudio(src_arg, executable=exe, pipe=pipe,
-                                             before_options=before or None, options=opts)
+                raw = _PCMAudio(src_arg, executable=exe, pipe=pipe,
+                                before_options=before or None, options=opts)
                 # Seek restarts fade in; track starts use FFmpeg afade instead.
                 src = SmoothVolume(raw, volume=self.volume,
                                    start_gain=0.0 if start > 0 else None)
                 if start > 0:
                     src.fade_to(self.volume, max(config.FADE_MS, 200))
             else:
-                src = CountingSource(discord.FFmpegOpusAudio(
+                src = CountingSource(_OpusAudio(
                     src_arg, executable=exe, pipe=pipe, bitrate=128,
                     before_options=before or None, options=opts))
         except Exception:
@@ -692,6 +729,10 @@ class GuildPlayer:
         try:
             while self.current is track and not self.destroyed:
                 await asyncio.sleep(1)
+                # A song added (or moved to the top) after this track started has not been
+                # looked up yet: do it now, not when this track ends (that left a 3s silence).
+                if self.queue and self.queue[0] is not self._prefetched:
+                    asyncio.create_task(self._prefetch())
                 if (self._preload or not self.queue or self.is_paused
                         or self.loop_mode == "track" or not track.duration):
                     continue
@@ -755,6 +796,9 @@ class GuildPlayer:
     async def _prefetch(self):
         if self.queue:
             nxt = self.queue[0]
+            if nxt is self._prefetched:
+                return  # already done or running (a failed lookup is not retried here)
+            self._prefetched = nxt
             try:
                 await resolve_stream(nxt)
             except Exception as exc:
