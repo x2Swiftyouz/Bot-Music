@@ -1,0 +1,17 @@
+[Unit]
+Description=Discord Music Bot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+WorkingDirectory=/opt/music-bot
+ExecStartPre=/opt/music-bot/.venv/bin/pip install --quiet --upgrade "yt-dlp[default]"
+ExecStart=/opt/music-bot/.venv/bin/python bot.py
+Restart=always
+RestartSec=5
+KillSignal=SIGTERM
+TimeoutStopSec=20
+User=musicbot
+
+[Install]
+WantedBy=multi-user.target

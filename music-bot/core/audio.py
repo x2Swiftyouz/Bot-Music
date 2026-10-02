@@ -1,0 +1,135 @@
+"""Smooth volume: ramps gain frame by frame instead of jumping (no clicks, no gaps)."""
+
+import array
+import sys
+import threading
+from typing import Callable, Optional
+
+import discord
+
+try:
+    import audioop  # stdlib < 3.13, audioop-lts on 3.13+ (installed with discord.py)
+except ImportError:  # pragma: no cover
+    audioop = None
+
+FRAME_MS = 20
+
+
+def _scale_ramp(data: bytes, start: float, end: float) -> bytes:
+    """Scale s16le stereo PCM with a linear gain ramp across the frame."""
+    samples = array.array("h")
+    samples.frombytes(data)
+    if sys.byteorder != "little":
+        samples.byteswap()
+    frames = len(samples) // 2
+    if frames == 0:
+        return data
+    delta = (end - start) / frames
+    g = start
+    for i in range(frames):
+        for j in (2 * i, 2 * i + 1):
+            v = int(samples[j] * g)
+            samples[j] = 32767 if v > 32767 else (-32768 if v < -32768 else v)
+        g += delta
+    if sys.byteorder != "little":
+        samples.byteswap()
+    return samples.tobytes()
+
+
+def _scale(data: bytes, gain: float) -> bytes:
+    if gain == 1.0:
+        return data
+    if gain <= 0.0:
+        return bytes(len(data))
+    if audioop:
+        return audioop.mul(data, 2, gain)
+    return _scale_ramp(data, gain, gain)
+
+
+class SmoothVolume(discord.AudioSource):
+    """Drop-in replacement for PCMVolumeTransformer with fades."""
+
+    def __init__(self, original: discord.AudioSource, volume: float = 1.0,
+                 start_gain: Optional[float] = None):
+        if original.is_opus():
+            raise discord.ClientException("SmoothVolume needs a PCM source")
+        self.original = original
+        self._lock = threading.Lock()
+        self._target = max(0.0, min(volume, 2.0))
+        self._gain = self._target if start_gain is None else start_gain
+        self._step = 0.0
+        self._on_done: Optional[Callable[[], None]] = None
+        self.frames = 0  # read counter for the watchdog
+
+    # PCMVolumeTransformer compatible API
+    @property
+    def volume(self) -> float:
+        return self._target
+
+    @volume.setter
+    def volume(self, value: float):
+        self.fade_to(value, 0)
+
+    def fade_to(self, target: float, ms: int, on_done: Optional[Callable[[], None]] = None):
+        """Ramp to target gain over ms. on_done runs (audio thread) when reached."""
+        with self._lock:
+            self._target = max(0.0, min(target, 2.0))
+            frames = int(ms // FRAME_MS)
+            if frames <= 0:
+                self._gain = self._target
+                self._step = 0.0
+            else:
+                self._step = (self._target - self._gain) / frames
+            self._on_done = on_done
+
+    def is_opus(self) -> bool:
+        return False
+
+    def cleanup(self):
+        self.original.cleanup()
+
+    def read(self) -> bytes:
+        data = self.original.read()
+        if not data:
+            return data
+        self.frames += 1
+        callback = None
+        with self._lock:
+            start = self._gain
+            if self._step:
+                end = start + self._step
+                if (self._step > 0 and end >= self._target) or (self._step < 0 and end <= self._target):
+                    end = self._target
+                    self._step = 0.0
+                self._gain = end
+            else:
+                end = start
+            if not self._step and self._on_done:
+                callback, self._on_done = self._on_done, None
+        out = _scale(data, end) if start == end else _scale_ramp(data, start, end)
+        if callback:
+            try:
+                callback()
+            except Exception:
+                pass
+        return out
+
+
+class CountingSource(discord.AudioSource):
+    """Pass-through for Opus sources that counts frames (watchdog)."""
+
+    def __init__(self, original: discord.AudioSource):
+        self.original = original
+        self.frames = 0
+
+    def read(self) -> bytes:
+        data = self.original.read()
+        if data:
+            self.frames += 1
+        return data
+
+    def is_opus(self) -> bool:
+        return self.original.is_opus()
+
+    def cleanup(self):
+        self.original.cleanup()
