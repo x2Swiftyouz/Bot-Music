@@ -8,7 +8,9 @@
 
 **ความเสถียร**: yt-dlp รันแยก thread, FFmpeg reconnect อัตโนมัติ, voice watchdog ที่ต่อเสียงใหม่เองเมื่อค้าง, เพลงเสียจะข้ามเอง, player loop ที่ crash จะเริ่มใหม่เอง, คิวถูกบันทึกลง SQLite ทุก 20 วินาทีและตอนปิดบอท เมื่อบอท restart จะกลับเข้าห้องและเล่นต่อจากตำแหน่งเดิม, มี `/health` endpoint สำหรับ monitoring
 
-**UI**: การ์ด Now Playing (รองรับภาษาไทย ใช้ฟอนต์ Kanit) พร้อม progress bar ที่ขยับตามเพลง, ปุ่มควบคุมที่เปลี่ยนตามสถานะ (ยังใช้ได้หลัง restart), dropdown ระดับเสียง, โหมด compact สำหรับมือถือ, แสดงเวลาที่เหลือได้, คิวแบบแบ่งหน้า, `/search` แบบ dropdown, `/help` แบบเลือกหมวด, สถานะห้องเสียงแสดงชื่อเพลง
+**การ์ด**: การ์ด Now Playing (รองรับภาษาไทย ใช้ฟอนต์ Kanit) แสดงชื่อศิลปิน ป้ายแหล่งเพลง เพลงถัดไป และ waveform ที่ขยับตามเพลง เลือกธีม (เบลอ/สีพื้น/มินิมอล) และรูปทรง (แนวนอน/จัตุรัสสำหรับมือถือ) ได้ด้วย `/settings card` มีการ์ดตอนกำลังโหลด การ์ดตอนเล่นไม่ได้ และการ์ดสรุปเมื่อจบเซสชัน ป้ายพิเศษ "ฮิต" สำหรับเพลงที่เปิดบ่อยในเซิร์ฟเวอร์ และป้ายวันเกิด (`/birthday set`) แชร์การ์ดเพลงที่ฟังอยู่ด้วย `/card` การ์ดส่งเป็น WebP และจะอัปโหลดใหม่เฉพาะเมื่อมีอะไรเปลี่ยน (หรือทุก `CARD_REFRESH` วินาที)
+
+**UI**: ปุ่มควบคุมที่เปลี่ยนตามสถานะ (ยังใช้ได้หลัง restart), dropdown ระดับเสียง, โหมด compact สำหรับมือถือ, แสดงเวลาที่เหลือได้, คิวแบบแบ่งหน้า, `/search` แบบ dropdown, `/help` แบบเลือกหมวด, สถานะห้องเสียงแสดงชื่อเพลง
 
 **การจัดการ**: vote skip, จำกัดเพลงต่อคน, จำกัดความยาวเพลง, กันเพลงซ้ำ, cooldown, โหมด 24/7, undo คิว 5 ครั้งล่าสุด, audit log (`/log`), เพลย์ลิสต์ส่วนตัว (save/load/rename/import/add/removetrack) และจำกัดจำนวนเพลย์ลิสต์ต่อคน, คำสั่ง prefix (`!p`, `!s`, `!q` ฯลฯ)
 
@@ -50,7 +52,8 @@ python bot.py
 | คิว | `/queue` `/nowplaying` `/remove` `/move` `/jump` `/shuffle` `/clear` `/undo` `/loop` |
 | เพลย์ลิสต์ | `/playlist save/load/list/show/delete/rename/import/add/removetrack` |
 | ข้อมูล | `/help` `/ping` `/about` `/log` |
-| แอดมิน | `/settings 247/announce/voteskip/compact/timeformat/show` |
+| การ์ด | `/card` `/birthday set/remove` |
+| แอดมิน | `/settings card/247/announce/voteskip/compact/timeformat/show` |
 
 **Prefix**: ค่าเริ่มต้นคือ `!` เปลี่ยนได้ด้วย `PREFIX` ใน `.env` หรือ mention บอทแทน prefix ก็ได้ คำย่อที่ใช้บ่อย: `!p` เล่น, `!s` ข้าม, `!q` คิว, `!np` เพลงที่เล่นอยู่, `!v 80` เสียง, `!l` วนซ้ำ, `!ff 30` กรอ, `!h` ช่วยเหลือ
 
@@ -73,12 +76,13 @@ core/sources.py   yt-dlp, Spotify, Track
 core/stream.py    ตัวดาวน์โหลดเสียงสำหรับ pipe mode
 core/player.py    คิว ระบบเล่นเพลง gapless watchdog
 core/audio.py     smooth volume และ fade
-core/card.py      การ์ด Now Playing
+core/card.py      การ์ด Now Playing, โหลด, error, แชร์ และสรุปเซสชัน
 core/ui.py        embed, ปุ่ม, หน้า
 core/checks.py    ตรวจสิทธิ์
 core/helpdata.py  รายการคำสั่งสำหรับ /help
 cogs/music.py     คำสั่งหลัก, กู้คืนคิว
 cogs/settings.py  ตั้งค่าเซิร์ฟเวอร์
+cogs/cards.py     /card และ /birthday
 cogs/playlists.py เพลย์ลิสต์
 cogs/info.py      /help /ping /about
 cogs/prefix.py    คำสั่ง prefix

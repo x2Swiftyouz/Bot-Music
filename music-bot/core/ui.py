@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING, Awaitable, Callable, Optional
 
 import discord
 
+from core.card import FILENAME
 from core.checks import UserError, control
 from core.sources import SOURCE_COLORS, Track, detect_source, fmt_time
 
@@ -35,18 +36,30 @@ def _time_line(p: "GuildPlayer") -> str:
     return f"`{fmt_time(pos)}` {progress_bar(pos, t.duration)} `{right}`"
 
 
-def build_now_playing(p: "GuildPlayer") -> discord.Embed:
+def build_now_playing(p: "GuildPlayer", card: Optional[bool] = None) -> discord.Embed:
+    """card: whether a card image is attached (default: the panel's own state)."""
     t = p.current
     if not t:
         return build_idle_embed()
-    state = "⏸ หยุดชั่วคราว" if p.is_paused else "▶️ กำลังเล่น"
+    has_card = p.has_card if card is None else card
     e = discord.Embed(
         title=t.title[:250],
         url=t.url if t.url.startswith("http") else None,
         color=track_color(t),
     )
+    if p.loading:
+        e.set_author(name="⏳ กำลังโหลด…")
+        if has_card:
+            e.set_image(url=f"attachment://{FILENAME}")
+        elif t.thumbnail:
+            e.set_thumbnail(url=t.thumbnail)
+        e.description = f"-# ขอโดย {t.requester_name or '-'}"
+        return e
+    state = "⏸ หยุดชั่วคราว" if p.is_paused else "▶️ กำลังเล่น"
+    artist = f"**{t.artist}**\n" if t.artist else ""
     if p.compact:
-        e.description = f"{_time_line(p)}\n-# {t.requester_name or '-'} · {int(p.volume * 100)}%"
+        e.description = (f"{artist}{_time_line(p)}\n"
+                         f"-# {t.requester_name or '-'} · {int(p.volume * 100)}%")
         if p.queue:
             e.description += f" · ถัดไป: {p.queue[0].title[:50]}"
         if t.thumbnail:
@@ -55,11 +68,13 @@ def build_now_playing(p: "GuildPlayer") -> discord.Embed:
         return e
 
     e.set_author(name=state)
-    if getattr(p, "has_card", False):
-        e.set_image(url="attachment://nowplaying.jpg")
-    elif t.thumbnail:
-        e.set_thumbnail(url=t.thumbnail)
-    e.description = _time_line(p)
+    if has_card:  # the card already shows artist, progress and badges
+        e.set_image(url=f"attachment://{FILENAME}")
+        e.description = _time_line(p)
+    else:
+        if t.thumbnail:
+            e.set_thumbnail(url=t.thumbnail)
+        e.description = artist + _time_line(p)
     e.add_field(name="ขอโดย", value=t.requester_name or "-", inline=True)
     e.add_field(name="เสียง", value=f"{int(p.volume * 100)}%", inline=True)
     e.add_field(name="วนซ้ำ", value=LOOP_ICON[p.loop_mode], inline=True)

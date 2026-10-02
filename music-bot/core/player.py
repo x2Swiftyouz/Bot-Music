@@ -2,7 +2,10 @@
 
 import asyncio
 import ctypes.util
+import dataclasses
+import datetime
 import io
+import json
 import logging
 import os
 import math
@@ -62,6 +65,14 @@ OPUS_LOADED = _load_opus()
 
 LOOP_MODES = ("off", "track", "queue")
 
+
+def _today() -> datetime.date:
+    try:
+        from zoneinfo import ZoneInfo
+        return datetime.datetime.now(ZoneInfo(config.TIMEZONE)).date()
+    except Exception:  # no tz database (Windows without tzdata)
+        return datetime.date.today()
+
 class GuildPlayer:
     def __init__(self, bot: "MusicBot", guild: discord.Guild, settings: dict):
         self.bot = bot
@@ -80,12 +91,22 @@ class GuildPlayer:
 
         self.compact = bool(settings.get("compact"))
         self.time_remaining = bool(settings.get("time_remaining"))
+        self.card_theme = settings.get("card_theme") or "blur"
+        self.card_layout = settings.get("card_layout") or "wide"
         self._undo: deque[tuple[str, list[Track]]] = deque(maxlen=5)
         self._preload: Optional[tuple[Track, discord.AudioSource, str]] = None
         self._preload_task: Optional[asyncio.Task] = None
         self._wd_frames = -1
         self._wd_since = 0.0
         self.has_card = False
+        self.loading = False          # panel shows the loading card while a track resolves
+        self._card_key = None         # card state of the last uploaded image
+        self._card_at = 0.0
+        self._blink = False
+        self._panel_sig = None        # last panel edit, to skip edits that change nothing
+        self.track_plays = 0          # plays of the current track in this server (hit badge)
+        self.requester_birthday = False
+        self.session: list[dict] = []  # finished tracks, for the recap card
         self._panel_lock = asyncio.Lock()
         self.skip_votes: set[int] = set()
         self.destroyed = False
@@ -417,8 +438,11 @@ class GuildPlayer:
 
         if not self.queue or self._hold:
             self.current = None
+            self.loading = False
             await self._set_status(None)
             await self.update_panel()
+            if self.stay_247:  # 24/7 never leaves, so recap when the queue runs out
+                await self.send_summary()
             self._wake.clear()
             timeout = None if self.stay_247 else config.IDLE_TIMEOUT
             try:
@@ -442,12 +466,21 @@ class GuildPlayer:
 
         log.info("[%s] Resolving %s", self.guild.id, track.url)
         t0 = time.monotonic()
+        resolving = asyncio.ensure_future(resolve_stream(track))
         try:
-            await resolve_stream(track)
+            # Slow lookup: show a loading card instead of an old panel or nothing.
+            await asyncio.wait_for(asyncio.shield(resolving), 1.0)
+        except asyncio.TimeoutError:
+            if start == 0 and self.announce:
+                await self.send_panel(loading=True)
+        except Exception:
+            pass  # reported below
+        try:
+            await resolving
         except Exception as exc:
             log.warning("Resolve failed %s: %s", track.url, exc)
             reason = str(exc).splitlines()[0][:180]
-            await self.send(f"⚠️ เล่นไม่ได้ ข้าม: **{track.title}**\n`{reason}`")
+            await self._show_error(track, reason)
             self.current = None
             self._fail_streak += 1
             if self._fail_streak >= 5:
@@ -496,11 +529,14 @@ class GuildPlayer:
         self._paused_total = 0.0
 
         self._wd_frames, self._wd_since = -1, time.monotonic()
-        if start == 0:
+        await self._load_badges(track, count=start == 0)
+        was_loading = self.loading and self.panel_message is not None
+        self.loading = False
+        if start == 0 and not was_loading:
             if self.announce:
                 await self.send_panel()
         else:
-            await self.update_panel()
+            await self.update_panel()  # also turns the loading card into the real one
         await self._set_status(track)
         await self._update_presence()
         asyncio.create_task(self._prefetch())
@@ -532,6 +568,7 @@ class GuildPlayer:
         if self._no_bookkeeping:
             self._no_bookkeeping = False
             return
+        self._record(track)
         self.history.append(track)
         if self.loop_mode == "track" and not self._skipped:
             self.queue.appendleft(track)
@@ -665,23 +702,112 @@ class GuildPlayer:
         except Exception:
             pass
 
-    async def _card_file(self) -> Optional[discord.File]:
+    # ------------------------------------------------------------- cards
+    def card_state(self, mode: str = "play", reason: str = ""):
+        from core.card import CardState
+        return CardState(
+            position=self.position, volume=int(round(self.volume * 100)), loop=self.loop_mode,
+            queue_len=len(self.queue), paused=self.is_paused, remaining=self.time_remaining,
+            next_title=self.queue[0].title if self.queue else "", hot=self.track_plays,
+            birthday=self.requester_birthday, blink=self._blink, theme=self.card_theme,
+            layout=self.card_layout, mode=mode, reason=reason)
+
+    async def card_file(self, mode: str = "play", reason: str = "") -> Optional[discord.File]:
+        """Render the current track's card (None when cards are off or rendering failed)."""
         if not config.MUSIC_CARD or self.compact or not self.current:
             return None
-        from core.card import make_card
-        data = await make_card(
-            self.current, position=self.position, volume=int(self.volume * 100),
-            loop=self.loop_mode, queue_len=len(self.queue), paused=self.is_paused,
-            remaining=self.time_remaining)
-        return discord.File(io.BytesIO(data), filename="nowplaying.jpg") if data else None
+        from core.card import FILENAME, make_card
+        data = await make_card(self.current, self.card_state(mode, reason))
+        return discord.File(io.BytesIO(data), filename=FILENAME) if data else None
 
+    async def _card_file(self, tick: bool = False, mode: str = "play",
+                         reason: str = "") -> Optional[discord.File]:
+        """Panel card. On timer ticks the image is re-uploaded only when something besides
+        the progress changed, or every CARD_REFRESH seconds. None = keep the current image."""
+        if not self.current:
+            return None
+        key = (self.current.url, dataclasses.replace(
+            self.card_state(mode, reason), position=0, blink=False))
+        now = time.monotonic()
+        if tick and key == self._card_key and now - self._card_at < config.CARD_REFRESH:
+            return None
+        if not self.current.duration:
+            self._blink = not self._blink  # LIVE dot blinks between uploads
+        card = await self.card_file(mode, reason)
+        if card:
+            self._card_key, self._card_at = key, now
+        return card
+
+    async def _load_badges(self, track: Track, count: bool):
+        """Hit counter and requester birthday for the card badges."""
+        self.track_plays, self.requester_birthday = 0, False
+        try:
+            db = self.bot.db
+            if count:
+                self.track_plays = await db.bump_play(self.guild.id, track.url)
+            else:
+                self.track_plays = await db.get_plays(self.guild.id, track.url)
+            bday = await db.get_birthday(track.requester_id) if track.requester_id else None
+            if bday:
+                today = _today()
+                self.requester_birthday = bday == (today.month, today.day)
+        except Exception as exc:
+            log.debug("badge lookup failed: %s", exc)
+
+    async def _show_error(self, track: Track, reason: str):
+        """Error card for a track that cannot play. Replaces the loading card if shown."""
+        text = f"⚠️ เล่นไม่ได้ ข้าม: **{track.title}**\n`{reason}`"
+        card = await self.card_file("error", reason)
+        loading, self.loading = self.loading, False
+        if loading and self.panel_message:
+            try:
+                await self.panel_message.edit(content=text, embed=None, view=None,
+                                              attachments=[card] if card else [])
+            except discord.HTTPException:
+                pass
+            self.panel_message, self.has_card = None, False
+        elif card:
+            await self.send(text, file=card)
+        else:
+            await self.send(text)
+
+    # ----------------------------------------------------- session recap
+    def _record(self, track: Track, force: bool = False):
+        if self.destroyed and not force:
+            return  # destroy() already recorded the playing track
+        played = self.position
+        if track.duration:
+            played = min(played, track.duration)
+        self.session.append({
+            "title": track.title, "url": track.url, "thumbnail": track.thumbnail,
+            "origin": track.origin, "requester_id": track.requester_id,
+            "requester_name": track.requester_name, "seconds": max(played, 0.0)})
+        if len(self.session) > 5000:
+            del self.session[:1000]
+
+    async def send_summary(self):
+        plays, self.session = self.session, []
+        if not config.SESSION_SUMMARY or not plays or sum(p["seconds"] for p in plays) < 30:
+            return
+        data = None
+        if config.MUSIC_CARD:
+            from core.card import EXT, make_summary
+            data = await make_summary(plays)
+        if data:
+            await self.send(file=discord.File(io.BytesIO(data), filename=f"recap.{EXT}"))
+        else:
+            total = int(sum(p["seconds"] for p in plays))
+            await self.send(f"📊 สรุปเซสชัน: {len(plays)} เพลง · ฟังรวม {fmt_time(total)}")
+
+    # ------------------------------------------------------------- panel
     def make_view(self) -> discord.ui.View:
         from core.ui import CompactPanelView, PanelView
         return CompactPanelView(self) if self.compact else PanelView(self)
 
-    async def send_panel(self):
+    async def send_panel(self, loading: bool = False):
         from core.ui import build_now_playing
-        card = await self._card_file()
+        self.loading = loading
+        card = await self._card_file(mode="loading" if loading else "play")
         self.has_card = card is not None
         embed = build_now_playing(self)
         try:
@@ -691,6 +817,7 @@ class GuildPlayer:
                 except discord.HTTPException:
                     pass
             kwargs = {"file": card} if card else {}
+            self._panel_sig = None
             self.panel_message = await self.send(embed=embed, view=self.make_view(), **kwargs)
         except discord.HTTPException as exc:
             log.debug("send_panel failed: %s", exc)
@@ -700,9 +827,9 @@ class GuildPlayer:
         if not self.panel_message or (tick and self._panel_lock.locked()):
             return
         async with self._panel_lock:
-            await self._edit_panel()
+            await self._edit_panel(tick)
 
-    async def _edit_panel(self):
+    async def _edit_panel(self, tick: bool = False):
         if not self.panel_message:
             return
         from core.ui import build_idle_embed, build_now_playing
@@ -710,14 +837,20 @@ class GuildPlayer:
             if self.current:
                 kwargs = {}
                 if self.has_card:
-                    card = await self._card_file()  # re-render so the card progress moves
+                    card = await self._card_file(tick, mode="loading" if self.loading else "play")
                     if card:
                         kwargs["attachments"] = [card]
+                embed, view = build_now_playing(self), self.make_view()
+                sig = (json.dumps(embed.to_dict(), sort_keys=True, ensure_ascii=False),
+                       repr(view.to_components()))
+                if not kwargs and sig == self._panel_sig:
+                    return  # nothing visible changed (e.g. paused or live)
                 if self.panel_message:
-                    await self.panel_message.edit(embed=build_now_playing(self),
-                                                  view=self.make_view(), **kwargs)
+                    await self.panel_message.edit(embed=embed, view=view, **kwargs)
+                    self._panel_sig = sig
             else:
                 self.has_card = False
+                self._panel_sig = None
                 await self.panel_message.edit(embed=build_idle_embed(), view=None,
                                               attachments=[])
                 self.panel_message = None
@@ -768,9 +901,13 @@ class GuildPlayer:
             if task and task is not me and not task.done():
                 task.cancel()
         self.queue.clear()
+        if self.current:
+            self._record(self.current, force=True)
         self.current = None
         await self._set_status(None)
         await self.update_panel()
+        if not self.bot.shutting_down:
+            await self.send_summary()
         src = self._smooth_source()
         if src and self.vc.is_playing() and config.FADE_MS > 0:
             src.fade_to(0, config.FADE_MS)

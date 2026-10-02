@@ -21,7 +21,7 @@ ALIASES = {
     "r": "resume", "dc": "stop", "leave": "stop", "q": "queue", "np": "nowplaying",
     "v": "volume", "vol": "volume", "l": "loop", "sh": "shuffle", "rm": "remove",
     "mv": "move", "j": "jump", "cl": "clear", "ff": "forward", "rw": "backward",
-    "h": "help", "find": "search", "u": "undo",
+    "h": "help", "find": "search", "u": "undo", "share": "card",
 }
 
 
@@ -155,7 +155,14 @@ class Prefix(commands.Cog):
         p = self.bot.players.get(msg.guild.id)
         if not p or not p.current:
             raise UserError("ไม่มีเพลงเล่นอยู่")
-        await self._say(msg, embed=build_now_playing(p), view=self.bot.panel_view)
+        card = await p.card_file()
+        kw = {"file": card} if card else {}
+        await self._say(msg, embed=build_now_playing(p, card=card is not None),
+                        view=self.bot.panel_view, **kw)
+
+    async def cmd_card(self, msg, args):
+        cards = self.bot.get_cog("Cards")
+        await self._say(msg, **await cards.share_message(msg.guild.id, msg.author))
 
     async def cmd_remove(self, msg, args):
         p = self._ctl(msg)

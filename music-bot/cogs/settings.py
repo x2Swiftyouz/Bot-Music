@@ -1,8 +1,13 @@
-"""Server settings: 24/7, announcements, vote skip, compact panel, time format."""
+"""Server settings: 24/7, announcements, vote skip, compact panel, time format, card style."""
+
+from typing import Optional
 
 import discord
 from discord import app_commands
 from discord.ext import commands
+
+THEME_NAMES = {"blur": "เบลอจากปก", "solid": "สีพื้นจากปก", "minimal": "มินิมอล"}
+LAYOUT_NAMES = {"wide": "แนวนอน (จอคอม)", "square": "จัตุรัส (มือถือ)"}
 
 
 @app_commands.guild_only()
@@ -59,6 +64,30 @@ class Settings(commands.GroupCog, group_name="settings", group_description="ต�
             await p.update_panel()
         await inter.response.send_message(f"⏱ เวลา: {mode.name}", ephemeral=True)
 
+    @app_commands.command(description="รูปแบบการ์ด Now Playing")
+    @app_commands.describe(theme="พื้นหลังการ์ด", layout="รูปทรงการ์ด")
+    @app_commands.choices(
+        theme=[app_commands.Choice(name=v, value=k) for k, v in THEME_NAMES.items()],
+        layout=[app_commands.Choice(name=v, value=k) for k, v in LAYOUT_NAMES.items()])
+    async def card(self, inter: discord.Interaction,
+                   theme: Optional[app_commands.Choice[str]] = None,
+                   layout: Optional[app_commands.Choice[str]] = None):
+        p = self._player(inter.guild_id)
+        if theme:
+            await self.bot.db.set_setting(inter.guild_id, "card_theme", theme.value)
+            if p:
+                p.card_theme = theme.value
+        if layout:
+            await self.bot.db.set_setting(inter.guild_id, "card_layout", layout.value)
+            if p:
+                p.card_layout = layout.value
+        s = await self.bot.db.get_settings(inter.guild_id)
+        await inter.response.send_message(
+            f"🖼 การ์ด: {THEME_NAMES.get(s['card_theme'], s['card_theme'])} · "
+            f"{LAYOUT_NAMES.get(s['card_layout'], s['card_layout'])}", ephemeral=True)
+        if p and (theme or layout):
+            await p.update_panel()
+
     @app_commands.command(description="ดูค่าทั้งหมด")
     async def show(self, inter: discord.Interaction):
         s = await self.bot.db.get_settings(inter.guild_id)
@@ -71,6 +100,8 @@ class Settings(commands.GroupCog, group_name="settings", group_description="ต�
         e.add_field(name="วนซ้ำ", value=s["loop_mode"])
         e.add_field(name="Compact", value=on(s["compact"]))
         e.add_field(name="เวลา", value="เวลาที่เหลือ" if s["time_remaining"] else "ความยาวเพลง")
+        e.add_field(name="การ์ด", value=f"{THEME_NAMES.get(s['card_theme'], s['card_theme'])} · "
+                                         f"{LAYOUT_NAMES.get(s['card_layout'], s['card_layout'])}")
         await inter.response.send_message(embed=e, ephemeral=True)
 
 

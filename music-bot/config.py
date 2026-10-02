@@ -59,6 +59,10 @@ PREFIX = os.getenv("PREFIX", "!")
 OWNER_ID = _int("OWNER_ID", 0)
 PLAYLIST_LIMIT = _int("PLAYLIST_LIMIT", 10)       # playlists per user
 MUSIC_CARD = _bool("MUSIC_CARD", True)           # image card on now playing
+CARD_REFRESH = _int("CARD_REFRESH", 20)          # seconds between card re-uploads while playing
+SESSION_SUMMARY = _bool("SESSION_SUMMARY", True)  # recap card when the session ends
+HOT_THRESHOLD = _int("HOT_THRESHOLD", 5)         # plays in a server for the "hit" badge
+TIMEZONE = os.getenv("TIMEZONE", "Asia/Bangkok")  # for birthday badges
 
 # Health endpoint (0 = disabled)
 HEALTH_PORT = _int("HEALTH_PORT", 8080)

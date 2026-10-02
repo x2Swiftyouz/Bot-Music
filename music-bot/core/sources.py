@@ -88,6 +88,7 @@ class Track:
     requester_name: str = ""
     thumbnail: Optional[str] = None
     origin: str = "youtube"       # where the user found it (spotify, youtube, ...)
+    artist: str = ""              # artist or channel name, shown under the title
     # runtime only, never saved
     _stream: Optional[str] = field(default=None, repr=False, compare=False)
     _stream_at: float = field(default=0.0, repr=False, compare=False)
@@ -117,7 +118,7 @@ class Track:
     @classmethod
     def from_dict(cls, d: dict) -> "Track":
         keys = {"title", "url", "duration", "requester_id", "requester_name",
-                "thumbnail", "origin"}
+                "thumbnail", "origin", "artist"}
         return cls(**{k: v for k, v in d.items() if k in keys})
 
 
@@ -178,6 +179,16 @@ def _thumb(entry: dict) -> Optional[str]:
     return thumbs[-1]["url"] if thumbs else None
 
 
+def _artist(e: dict) -> str:
+    """Artist tag, else the channel name without YouTube suffixes."""
+    name = e.get("artist") or e.get("creator") or e.get("uploader") or e.get("channel") or ""
+    name = name.split(",")[0].strip() if e.get("artist") else name.strip()
+    for suffix in (" - Topic", "VEVO", "Official"):
+        if name.endswith(suffix) and len(name) > len(suffix):
+            name = name[: -len(suffix)].strip()
+    return name
+
+
 def _entry_to_track(e: dict, requester_id: int, requester_name: str) -> Optional[Track]:
     vid = e.get("id")
     ie = (e.get("ie_key") or e.get("extractor_key") or "").lower()
@@ -200,6 +211,7 @@ def _entry_to_track(e: dict, requester_id: int, requester_name: str) -> Optional
         requester_name=requester_name,
         thumbnail=thumb,
         origin=detect_source(url),
+        artist=_artist(e),
     )
 
 
@@ -259,6 +271,7 @@ async def resolve_stream(track: Track) -> str:
     if info.get("duration"):
         track.duration = int(info["duration"])
     track.thumbnail = track.thumbnail or _thumb(info)
+    track.artist = track.artist or _artist(info)
     track._stream = info["url"]
     track._stream_at = time.time()
     track._headers = dict(info.get("http_headers") or {})
@@ -362,6 +375,7 @@ class SpotifyClient:
                 requester_name=requester_name,
                 thumbnail=images[0]["url"] if images else None,
                 origin="spotify",
+                artist=artists,
             ))
         return tracks
 

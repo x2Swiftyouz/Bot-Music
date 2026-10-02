@@ -18,7 +18,9 @@ CREATE TABLE IF NOT EXISTS guild_settings (
     vote_skip INTEGER DEFAULT 1,
     announce INTEGER DEFAULT 1,
     compact INTEGER DEFAULT 0,
-    time_remaining INTEGER DEFAULT 0
+    time_remaining INTEGER DEFAULT 0,
+    card_theme TEXT DEFAULT 'blur',
+    card_layout TEXT DEFAULT 'wide'
 );
 CREATE TABLE IF NOT EXISTS queue_state (
     guild_id INTEGER PRIMARY KEY,
@@ -43,15 +45,27 @@ CREATE TABLE IF NOT EXISTS audit (
     at REAL
 );
 CREATE INDEX IF NOT EXISTS audit_guild ON audit (guild_id, at);
+CREATE TABLE IF NOT EXISTS track_plays (
+    guild_id INTEGER,
+    url TEXT,
+    plays INTEGER DEFAULT 0,
+    PRIMARY KEY (guild_id, url)
+);
+CREATE TABLE IF NOT EXISTS birthdays (
+    user_id INTEGER PRIMARY KEY,
+    month INTEGER,
+    day INTEGER
+);
 """
 
 SETTING_KEYS = (
     "volume", "loop_mode", "stay_247",
-    "vote_skip", "announce", "compact", "time_remaining",
+    "vote_skip", "announce", "compact", "time_remaining", "card_theme", "card_layout",
 )
 
 # Columns added after the first release: (name, SQL type with default).
-MIGRATIONS = (("compact", "INTEGER DEFAULT 0"), ("time_remaining", "INTEGER DEFAULT 0"))
+MIGRATIONS = (("compact", "INTEGER DEFAULT 0"), ("time_remaining", "INTEGER DEFAULT 0"),
+              ("card_theme", "TEXT DEFAULT 'blur'"), ("card_layout", "TEXT DEFAULT 'wide'"))
 
 
 class Database:
@@ -85,6 +99,7 @@ class Database:
             "volume": config.DEFAULT_VOLUME, "loop_mode": "off",
             "stay_247": 0, "vote_skip": 1, "announce": 1,
             "compact": 0, "time_remaining": 0,
+            "card_theme": "blur", "card_layout": "wide",
         }
         if row:
             for k in SETTING_KEYS:
@@ -175,3 +190,34 @@ class Database:
         cur = await self.conn.execute(
             "SELECT * FROM audit WHERE guild_id = ? ORDER BY id DESC LIMIT ?", (guild_id, limit))
         return [dict(r) for r in await cur.fetchall()]
+
+    # ---------------------------------------------------- card badges
+    async def bump_play(self, guild_id: int, url: str) -> int:
+        """Count one more play of a track in this server, return the new total."""
+        await self.conn.execute(
+            "INSERT INTO track_plays (guild_id, url, plays) VALUES (?, ?, 1) "
+            "ON CONFLICT(guild_id, url) DO UPDATE SET plays = plays + 1", (guild_id, url))
+        await self.conn.commit()
+        return await self.get_plays(guild_id, url)
+
+    async def get_plays(self, guild_id: int, url: str) -> int:
+        cur = await self.conn.execute(
+            "SELECT plays FROM track_plays WHERE guild_id = ? AND url = ?", (guild_id, url))
+        row = await cur.fetchone()
+        return row["plays"] if row else 0
+
+    async def set_birthday(self, user_id: int, month: int, day: int):
+        await self.conn.execute("INSERT OR REPLACE INTO birthdays VALUES (?, ?, ?)",
+                                (user_id, month, day))
+        await self.conn.commit()
+
+    async def delete_birthday(self, user_id: int) -> bool:
+        cur = await self.conn.execute("DELETE FROM birthdays WHERE user_id = ?", (user_id,))
+        await self.conn.commit()
+        return cur.rowcount > 0
+
+    async def get_birthday(self, user_id: int) -> Optional[tuple[int, int]]:
+        cur = await self.conn.execute(
+            "SELECT month, day FROM birthdays WHERE user_id = ?", (user_id,))
+        row = await cur.fetchone()
+        return (row["month"], row["day"]) if row else None

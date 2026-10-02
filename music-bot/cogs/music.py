@@ -213,7 +213,11 @@ class Music(commands.Cog):
         p = get_player(inter)
         if not p.current:
             raise UserError("ไม่มีเพลงเล่นอยู่")
-        await inter.response.send_message(embed=build_now_playing(p), view=self.bot.panel_view)
+        await inter.response.defer()
+        card = await p.card_file()
+        kw = {"file": card} if card else {}
+        await inter.followup.send(embed=build_now_playing(p, card=card is not None),
+                                  view=self.bot.panel_view, **kw)
 
     @app_commands.command(description="ปรับเสียง 0-150")
     @app_commands.guild_only()
