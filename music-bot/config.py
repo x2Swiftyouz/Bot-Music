@@ -68,6 +68,11 @@ SESSION_SUMMARY = _bool("SESSION_SUMMARY", True)  # recap card when the session 
 HOT_THRESHOLD = _int("HOT_THRESHOLD", 5)         # plays in a server for the "hit" badge
 TIMEZONE = os.getenv("TIMEZONE", "Asia/Bangkok")  # for birthday badges
 
+# Auto-clean: command replies and bot messages delete themselves after this many
+# seconds, and the "queue ended" panel is removed. Servers can change it with /settings autoclean
+AUTO_CLEAN = _bool("AUTO_CLEAN", True)
+AUTO_CLEAN_SECONDS = max(_int("AUTO_CLEAN_SECONDS", 20), 3)
+
 # Health endpoint (0 = disabled)
 HEALTH_PORT = _int("HEALTH_PORT", 8080)
 

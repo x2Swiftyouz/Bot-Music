@@ -14,7 +14,7 @@ from core.checks import UserError, control, get_player
 from core.player import GuildPlayer
 from core.sources import (Track, fmt_time, parse_time, search_busy, search_choices,
                           search_tracks)
-from core import lyrics
+from core import clean, lyrics
 from core.ui import (LOOP_ICON, LyricsView, QueueView, SearchView, build_added_embed,
                      build_now_playing)
 
@@ -152,6 +152,8 @@ class Music(commands.Cog):
                 await i.edit_original_response(content=None, embed=embed, view=None)
             except UserError as exc:
                 await i.edit_original_response(content=str(exc), embed=None, view=None)
+            if await clean.enabled(self.bot, i.guild_id):
+                clean.later(config.AUTO_CLEAN_SECONDS, i)
 
         lines = [f"`{n}.` {t.title[:80]} `[{t.fmt_duration()}]`"
                  for n, t in enumerate(results, 1)]

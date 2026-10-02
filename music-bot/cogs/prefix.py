@@ -1,12 +1,15 @@
 """Prefix commands (default "!"), e.g. !p song, !s, !q. Needs MESSAGE_CONTENT."""
 
+import contextvars
 import logging
 import time
+from typing import Optional
 
 import discord
 from discord.ext import commands
 
 import config
+from core import clean
 from cogs.info import HelpView, about_embed, help_embed, ping_embed
 from core.checks import UserError, control_member
 from core.player import LOOP_MODES
@@ -14,6 +17,10 @@ from core.sources import fmt_time, parse_time, search_choices
 from core.ui import LOOP_ICON, QueueView, SearchView, build_now_playing
 
 log = logging.getLogger("musicbot.prefix")
+
+# Bot replies sent while handling the current prefix command (for auto-clean).
+_replies: contextvars.ContextVar[Optional[list]] = contextvars.ContextVar("replies",
+                                                                        default=None)
 
 ALIASES = {
     "p": "play", "pn": "playnext", "s": "skip", "n": "skip", "next": "skip",
@@ -60,14 +67,20 @@ class Prefix(commands.Cog):
         handler = getattr(self, f"cmd_{name}", None)
         if not handler:
             return
+        _replies.set([])  # each message is handled in its own task, so this is per command
         try:
             await handler(msg, args.strip())
             try:
                 await self.bot.db.audit(msg.guild.id, msg.author.id, name, args.strip()[:100])
             except Exception:
                 pass
+            delay = clean.delay_for(name)
+            if delay and await clean.enabled(self.bot, msg.guild.id):
+                clean.later(delay, msg, *(_replies.get() or ()))
         except UserError as exc:
             await msg.reply(f"⚠️ {exc}", mention_author=False, delete_after=15)
+            if await clean.enabled(self.bot, msg.guild.id):
+                clean.later(15, msg)
         except discord.HTTPException:
             pass
         except Exception:
@@ -75,7 +88,10 @@ class Prefix(commands.Cog):
             await msg.reply("❌ เกิดข้อผิดพลาด ลองใหม่", mention_author=False)
 
     async def _say(self, msg: discord.Message, text: str = None, **kw):
-        return await msg.reply(text, mention_author=False, **kw)
+        reply = await msg.reply(text, mention_author=False, **kw)
+        if (sent := _replies.get()) is not None:
+            sent.append(reply)  # auto-clean removes it with the command
+        return reply
 
     def _ctl(self, msg):
         return control_member(self.bot, msg.author)
@@ -110,6 +126,8 @@ class Prefix(commands.Cog):
                 await i.edit_original_response(content=None, embed=embed, view=None)
             except UserError as exc:
                 await i.edit_original_response(content=str(exc), embed=None, view=None)
+            if await clean.enabled(self.bot, msg.guild.id):
+                clean.later(config.AUTO_CLEAN_SECONDS, i, msg)
 
         lines = [f"`{n}.` {t.title[:80]} `[{t.fmt_duration()}]`" for n, t in enumerate(results, 1)]
         e = discord.Embed(title=f"🔎 {args}", description="\n".join(lines), color=0x5865F2)

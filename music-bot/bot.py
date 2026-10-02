@@ -12,7 +12,7 @@ from discord.ext import commands
 
 import config
 from core.checks import UserError
-from core import card, lyrics
+from core import card, clean, lyrics
 from core.db import Database
 from core.player import GuildPlayer
 from core.sources import spotify
@@ -87,6 +87,9 @@ class MusicBot(commands.Bot):
             await self.db.audit(inter.guild_id, inter.user.id, command.qualified_name, detail)
         except Exception:
             pass
+        delay = clean.delay_for(command.qualified_name)
+        if delay and await clean.enabled(self, inter.guild_id):
+            clean.later(delay, inter)
 
     async def on_app_error(self, inter: discord.Interaction, error: app_commands.AppCommandError):
         original = getattr(error, "original", error)

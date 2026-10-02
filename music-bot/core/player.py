@@ -107,6 +107,7 @@ class GuildPlayer:
         self.card_theme = settings.get("card_theme") or "blur"
         self.card_layout = settings.get("card_layout") or "wide"
         self.normalize = bool(settings.get("normalize"))
+        self.auto_clean = bool(settings.get("auto_clean"))
         self.request_channel_id = settings.get("request_channel") or 0
         self.request_message_id = settings.get("request_message") or 0
         self.live_lyrics = False      # karaoke line on the panel
@@ -211,6 +212,8 @@ class GuildPlayer:
             return None
         if self.in_request_channel():
             kwargs.setdefault("delete_after", 30)  # keep the request channel clean
+        elif self.auto_clean:
+            kwargs.setdefault("delete_after", config.AUTO_CLEAN_SECONDS)
         try:
             return await self.text_channel.send(content, **kwargs)
         except discord.HTTPException:
@@ -895,10 +898,16 @@ class GuildPlayer:
             from core.card import EXT, make_summary
             data = await make_summary(plays)
         if data:
-            await self.send(file=discord.File(io.BytesIO(data), filename=f"recap.{EXT}"))
+            await self.send(file=discord.File(io.BytesIO(data), filename=f"recap.{EXT}"),
+                            **self._recap_keep())
         else:
             total = int(sum(p["seconds"] for p in plays))
-            await self.send(f"📊 สรุปเซสชัน: {len(plays)} เพลง · ฟังรวม {fmt_time(total)}")
+            await self.send(f"📊 สรุปเซสชัน: {len(plays)} เพลง · ฟังรวม {fmt_time(total)}",
+                            **self._recap_keep())
+
+    def _recap_keep(self) -> dict:
+        """The recap stays longer than other bot messages (10 min) when auto-clean is on."""
+        return {"delete_after": 600} if self.auto_clean and not self.in_request_channel() else {}
 
     # ------------------------------------------------------------- panel
     def make_view(self) -> discord.ui.View:
@@ -968,7 +977,9 @@ class GuildPlayer:
                     pass
             kwargs = {"file": card} if card else {}
             self._panel_sig = None
-            self.panel_message = await self.send(embed=embed, view=self.make_view(), **kwargs)
+            # the panel itself is never auto-deleted while it is live
+            self.panel_message = await self.send(embed=embed, view=self.make_view(),
+                                                 delete_after=None, **kwargs)
         except discord.HTTPException as exc:
             log.debug("send_panel failed: %s", exc)
 
@@ -1008,6 +1019,8 @@ class GuildPlayer:
                 else:
                     await self.panel_message.edit(embed=build_idle_embed(), view=None,
                                                   attachments=[])
+                    if self.auto_clean:  # "queue ended" goes away by itself
+                        await self.panel_message.delete(delay=config.AUTO_CLEAN_SECONDS)
                 self.panel_message = None
         except discord.NotFound:
             self.panel_message = None

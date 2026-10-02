@@ -6,6 +6,8 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
+import config
+
 THEME_NAMES = {"blur": "เบลอจากปก", "solid": "สีพื้นจากปก", "minimal": "มินิมอล",
                "polaroid": "โพลารอยด์", "cassette": "เทปคาสเซ็ต", "neon": "นีออน"}
 LAYOUT_NAMES = {"wide": "แนวนอน (จอคอม)", "square": "จัตุรัส (มือถือ)"}
@@ -113,6 +115,15 @@ class Settings(commands.GroupCog, group_name="settings", group_description="ต�
             text += "\n" + "\n".join(f"⚠️ {w}" for w in warnings)
         await inter.followup.send(text, ephemeral=True)
 
+    @app_commands.command(description="ลบข้อความตอบกลับของคำสั่งและข้อความบอทอัตโนมัติ เหลือแค่ panel")
+    async def autoclean(self, inter: discord.Interaction, enabled: bool):
+        await self.bot.db.set_setting(inter.guild_id, "auto_clean", int(enabled))
+        if p := self._player(inter.guild_id):
+            p.auto_clean = enabled
+        await inter.response.send_message(
+            f"🧹 ลบข้อความอัตโนมัติ: {'เปิด' if enabled else 'ปิด'}"
+            + (f" (หลัง {config.AUTO_CLEAN_SECONDS} วินาที)" if enabled else ""), ephemeral=True)
+
     @app_commands.command(description="ดูค่าทั้งหมด")
     async def show(self, inter: discord.Interaction):
         s = await self.bot.db.get_settings(inter.guild_id)
@@ -127,6 +138,7 @@ class Settings(commands.GroupCog, group_name="settings", group_description="ต�
         e.add_field(name="เวลา", value=("ความยาวเพลง", "เวลาที่เหลือ", "เวลาที่จบ")[
             int(s["time_remaining"] or 0) % 3])
         e.add_field(name="ความดังเท่ากัน", value=on(s["normalize"]))
+        e.add_field(name="ลบข้อความอัตโนมัติ", value=on(s["auto_clean"]))
         e.add_field(name="ห้องขอเพลง",
                     value=f"<#{s['request_channel']}>" if s["request_channel"] else "ปิด")
         e.add_field(name="การ์ด", value=f"{THEME_NAMES.get(s['card_theme'], s['card_theme'])} · "
