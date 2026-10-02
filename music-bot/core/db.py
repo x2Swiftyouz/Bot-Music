@@ -21,7 +21,9 @@ CREATE TABLE IF NOT EXISTS guild_settings (
     time_remaining INTEGER DEFAULT 0,
     card_theme TEXT DEFAULT 'blur',
     card_layout TEXT DEFAULT 'wide',
-    normalize INTEGER
+    normalize INTEGER,
+    request_channel INTEGER DEFAULT 0,
+    request_message INTEGER DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS queue_state (
     guild_id INTEGER PRIMARY KEY,
@@ -52,6 +54,10 @@ CREATE TABLE IF NOT EXISTS track_plays (
     plays INTEGER DEFAULT 0,
     PRIMARY KEY (guild_id, url)
 );
+CREATE TABLE IF NOT EXISTS welcomed (
+    guild_id INTEGER PRIMARY KEY,
+    at REAL
+);
 CREATE TABLE IF NOT EXISTS birthdays (
     user_id INTEGER PRIMARY KEY,
     month INTEGER,
@@ -62,13 +68,14 @@ CREATE TABLE IF NOT EXISTS birthdays (
 SETTING_KEYS = (
     "volume", "loop_mode", "stay_247",
     "vote_skip", "announce", "compact", "time_remaining", "card_theme", "card_layout",
-    "normalize",
+    "normalize", "request_channel", "request_message",
 )
 
 # Columns added after the first release: (name, SQL type with default).
 MIGRATIONS = (("compact", "INTEGER DEFAULT 0"), ("time_remaining", "INTEGER DEFAULT 0"),
               ("card_theme", "TEXT DEFAULT 'blur'"), ("card_layout", "TEXT DEFAULT 'wide'"),
-              ("normalize", "INTEGER"))
+              ("normalize", "INTEGER"), ("request_channel", "INTEGER DEFAULT 0"),
+              ("request_message", "INTEGER DEFAULT 0"))
 
 
 class Database:
@@ -104,6 +111,7 @@ class Database:
             "compact": 0, "time_remaining": 0,
             "card_theme": "blur", "card_layout": "wide",
             "normalize": int(config.NORMALIZE),  # NULL in the table = follow .env
+            "request_channel": 0, "request_message": 0,
         }
         if row:
             for k in SETTING_KEYS:
@@ -194,6 +202,19 @@ class Database:
         cur = await self.conn.execute(
             "SELECT * FROM audit WHERE guild_id = ? ORDER BY id DESC LIMIT ?", (guild_id, limit))
         return [dict(r) for r in await cur.fetchall()]
+
+    async def request_channels(self) -> dict[int, int]:
+        """guild_id -> request channel id, for every server that set one."""
+        cur = await self.conn.execute(
+            "SELECT guild_id, request_channel FROM guild_settings WHERE request_channel > 0")
+        return {r["guild_id"]: r["request_channel"] for r in await cur.fetchall()}
+
+    async def mark_welcomed(self, guild_id: int) -> bool:
+        """True the first time a server is seen (show the getting-started message once)."""
+        cur = await self.conn.execute(
+            "INSERT OR IGNORE INTO welcomed (guild_id, at) VALUES (?, ?)", (guild_id, time.time()))
+        await self.conn.commit()
+        return cur.rowcount > 0
 
     # ---------------------------------------------------- card badges
     async def bump_play(self, guild_id: int, url: str) -> int:

@@ -73,6 +73,8 @@ HEALTH_PORT = _int("HEALTH_PORT", 8080)
 
 # Now-playing panel refresh interval in seconds
 PANEL_REFRESH = _int("PANEL_REFRESH", 10)
+# Faster refresh while the panel shows live (karaoke) lyrics
+LYRICS_REFRESH = max(_int("LYRICS_REFRESH", 3), 2)
 
 
 # ---------------------------------------------------------------- binaries

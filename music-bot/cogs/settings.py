@@ -96,6 +96,21 @@ class Settings(commands.GroupCog, group_name="settings", group_description="ต�
         await inter.response.send_message(
             f"🎚 ปรับความดังให้เท่ากัน: {'เปิด' if enabled else 'ปิด'}", ephemeral=True)
 
+    @app_commands.command(description="ตั้งห้องขอเพลง: พิมพ์ชื่อเพลงในห้องนั้นแล้วเล่นเลย (เว้นว่าง = ปิด)")
+    @app_commands.describe(channel="ห้องข้อความที่จะใช้ขอเพลง")
+    async def request(self, inter: discord.Interaction,
+                      channel: Optional[discord.TextChannel] = None):
+        cog = self.bot.get_cog("RequestChannel")
+        if channel is None:
+            await cog.remove_channel(inter.guild_id)
+            return await inter.response.send_message("ปิดห้องขอเพลงแล้ว", ephemeral=True)
+        await inter.response.defer(ephemeral=True, thinking=True)
+        warnings = await cog.setup_channel(inter.guild, channel)
+        text = f"🎵 ตั้ง {channel.mention} เป็นห้องขอเพลงแล้ว"
+        if warnings:
+            text += "\n" + "\n".join(f"⚠️ {w}" for w in warnings)
+        await inter.followup.send(text, ephemeral=True)
+
     @app_commands.command(description="ดูค่าทั้งหมด")
     async def show(self, inter: discord.Interaction):
         s = await self.bot.db.get_settings(inter.guild_id)
@@ -109,6 +124,8 @@ class Settings(commands.GroupCog, group_name="settings", group_description="ต�
         e.add_field(name="Compact", value=on(s["compact"]))
         e.add_field(name="เวลา", value="เวลาที่เหลือ" if s["time_remaining"] else "ความยาวเพลง")
         e.add_field(name="ความดังเท่ากัน", value=on(s["normalize"]))
+        e.add_field(name="ห้องขอเพลง",
+                    value=f"<#{s['request_channel']}>" if s["request_channel"] else "ปิด")
         e.add_field(name="การ์ด", value=f"{THEME_NAMES.get(s['card_theme'], s['card_theme'])} · "
                                          f"{LAYOUT_NAMES.get(s['card_layout'], s['card_layout'])}")
         await inter.response.send_message(embed=e, ephemeral=True)

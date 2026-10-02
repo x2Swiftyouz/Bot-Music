@@ -26,7 +26,7 @@ logging.getLogger("discord.gateway").setLevel(logging.WARNING)
 log = logging.getLogger("musicbot")
 
 EXTENSIONS = ("cogs.music", "cogs.settings", "cogs.playlists", "cogs.info", "cogs.cards",
-              "cogs.prefix")
+              "cogs.request", "cogs.prefix")
 
 
 class MusicBot(commands.Bot):

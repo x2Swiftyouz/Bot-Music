@@ -254,10 +254,71 @@ async def search_choices(query: str, limit: int = 5, autocomplete: bool = False)
     return out
 
 
+# Versions that are rarely what a Spotify link means, unless the Spotify title says so.
+_WRONG_VERSION = ("live", "cover", "karaoke", "remix", "sped up", "slowed", "nightcore", "8d",
+                  "instrumental", "reaction", "mashup", "acoustic", "piano", "tutorial",
+                  "เวอร์ชั่น", "คาราโอเกะ", "คัฟเวอร์")
+
+
+def _norm(text: str) -> str:
+    return re.sub(r"[^\w]+", " ", (text or "").casefold()).strip()
+
+
+def match_score(entry: dict, track: Track) -> float:
+    """How well a YouTube search result matches a Spotify track (higher is better)."""
+    want = _norm(track.title)
+    title = _norm(entry.get("title"))
+    channel = (entry.get("channel") or entry.get("uploader") or "").strip()
+    score = 0.0
+    dur = entry.get("duration")
+    if track.duration and dur:
+        diff = abs(dur - track.duration)
+        score += 40 if diff <= 2 else 30 if diff <= 5 else 15 if diff <= 12 else \
+            -10 if diff <= 30 else -60
+    elif track.duration:
+        score -= 5  # unknown length: no proof either way
+    if channel.endswith(" - Topic"):
+        score += 25  # YouTube Music upload of the studio recording
+    if "official audio" in title or "audio" in title.split():
+        score += 10
+    elif "official" in title:
+        score += 4
+    artist = _norm((track.artist or "").split(",")[0])
+    if artist and (artist in title or artist in _norm(channel)):
+        score += 10
+    song = _norm(track.title.split(" - ", 1)[1] if " - " in track.title else track.title)
+    if song and song in title:
+        score += 15
+    for word in _WRONG_VERSION:
+        if word in title.split() or (" " in word and word in title):
+            if word not in want:
+                score -= 30
+    return score
+
+
+async def _match_spotify(track: Track) -> Optional[str]:
+    """Search 5 YouTube results and keep the one matching the Spotify track best."""
+    query = track.url.split(":", 1)[1]
+    try:
+        info = await run_ytdl(f"ytsearch5:{query}", YTDL_FLAT)
+    except Exception as exc:
+        log.debug("spotify match search failed: %s", exc)
+        return None
+    entries = [e for e in info.get("entries") or [] if e and e.get("id")]
+    if not entries:
+        return None
+    best = max(entries, key=lambda e: match_score(e, track))
+    log.info("Spotify match for %r: %r (score %.0f)", track.title, best.get("title"),
+             match_score(best, track))
+    return f"https://www.youtube.com/watch?v={best['id']}"
+
+
 async def resolve_stream(track: Track) -> str:
     """Return a fresh direct audio URL. Uses the prefetched one when still valid."""
     if track._stream and time.time() - track._stream_at < STREAM_TTL:
         return track._stream
+    if track.origin == "spotify" and track.url.startswith("ytsearch"):
+        track.url = await _match_spotify(track) or track.url
     info = await run_ytdl(track.url, YTDL_FULL)
     if "entries" in info:
         entries = [e for e in info["entries"] if e]

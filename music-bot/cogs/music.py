@@ -26,6 +26,16 @@ class Music(commands.Cog):
         self.bot = bot
         self._ac_cache: dict[str, tuple[float, list[app_commands.Choice[str]]]] = {}
         self._ac_latest: dict[int, object] = {}
+        self._cooldown: dict[int, float] = {}
+
+    def check_cooldown(self, user_id: int):
+        """PLAY_COOLDOWN for requests outside /play (panel ➕, request channel)."""
+        now = time.time()
+        if now - self._cooldown.get(user_id, 0) < config.PLAY_COOLDOWN:
+            raise UserError("ใจเย็น รอสักครู่แล้วค่อยขอเพลงใหม่")
+        self._cooldown[user_id] = now
+        if len(self._cooldown) > 5000:
+            self._cooldown.clear()
 
     # ------------------------------------------------------------ helpers
     async def connect(self, member: discord.Member) -> discord.VoiceClient:

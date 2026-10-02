@@ -94,6 +94,11 @@ class GuildPlayer:
         self.card_theme = settings.get("card_theme") or "blur"
         self.card_layout = settings.get("card_layout") or "wide"
         self.normalize = bool(settings.get("normalize"))
+        self.request_channel_id = settings.get("request_channel") or 0
+        self.request_message_id = settings.get("request_message") or 0
+        self.live_lyrics = False      # karaoke line on the panel
+        self.lyrics = None            # Lyrics of the current track (live lyrics mode)
+        self.lyrics_url: Optional[str] = None  # track the lyrics belong to (set when done)
         self._undo: deque[tuple[str, list[Track]]] = deque(maxlen=5)
         self._preload: Optional[tuple[Track, discord.AudioSource, str]] = None
         self._preload_task: Optional[asyncio.Task] = None
@@ -179,9 +184,15 @@ class GuildPlayer:
     def total_remaining(self) -> Optional[int]:
         return self.eta(len(self.queue))
 
+    def in_request_channel(self) -> bool:
+        return bool(self.request_channel_id and self.text_channel
+                    and getattr(self.text_channel, "id", None) == self.request_channel_id)
+
     async def send(self, content: str = None, **kwargs) -> Optional[discord.Message]:
         if not self.text_channel:
             return None
+        if self.in_request_channel():
+            kwargs.setdefault("delete_after", 30)  # keep the request channel clean
         try:
             return await self.text_channel.send(content, **kwargs)
         except discord.HTTPException:
@@ -349,6 +360,39 @@ class GuildPlayer:
         self.queue.clear()
         return n
 
+    def remove_tracks(self, tracks: list[Track]) -> int:
+        ids = {id(t) for t in tracks}
+        if not any(id(t) in ids for t in self.queue):
+            return 0
+        self.push_undo("remove")
+        before = len(self.queue)
+        self.queue = deque(t for t in self.queue if id(t) not in ids)
+        return before - len(self.queue)
+
+    def move_to_front(self, tracks: list[Track]) -> int:
+        """Selected tracks become the next ones, in their queue order."""
+        ids = {id(t) for t in tracks}
+        picked = [t for t in self.queue if id(t) in ids]
+        if not picked:
+            return 0
+        self.push_undo("move")
+        self.queue = deque(picked + [t for t in self.queue if id(t) not in ids])
+        return len(picked)
+
+    def dedupe(self) -> int:
+        """Remove repeated songs (and the one playing now) from the queue."""
+        seen = {self.current.url} if self.current else set()
+        keep = []
+        for t in self.queue:
+            if t.url not in seen:
+                seen.add(t.url)
+                keep.append(t)
+        removed = len(self.queue) - len(keep)
+        if removed:
+            self.push_undo("dedupe")
+            self.queue = deque(keep)
+        return removed
+
     def shuffle(self):
         self.push_undo("shuffle")
         items = list(self.queue)
@@ -483,7 +527,7 @@ class GuildPlayer:
             # Slow lookup: show a loading card instead of an old panel or nothing.
             await asyncio.wait_for(asyncio.shield(resolving), 1.0)
         except asyncio.TimeoutError:
-            if start == 0 and self.announce:
+            if start == 0 and (self.announce or self.in_request_channel()):
                 await self.send_panel(loading=True)
         except Exception:
             pass  # reported below
@@ -544,8 +588,10 @@ class GuildPlayer:
         await self._load_badges(track, count=start == 0)
         was_loading = self.loading and self.panel_message is not None
         self.loading = False
+        if self.live_lyrics:
+            asyncio.create_task(self._fetch_lyrics(track))
         if start == 0 and not was_loading:
-            if self.announce:
+            if self.announce or self.in_request_channel():
                 await self.send_panel()
         else:
             await self.update_panel()  # also turns the loading card into the real one
@@ -771,7 +817,7 @@ class GuildPlayer:
         text = f"⚠️ เล่นไม่ได้ ข้าม: **{track.title}**\n`{reason}`"
         card = await self.card_file("error", reason)
         loading, self.loading = self.loading, False
-        if loading and self.panel_message:
+        if loading and self.panel_message and not self._is_request_panel():
             try:
                 await self.panel_message.edit(content=text, embed=None, view=None,
                                               attachments=[card] if card else [])
@@ -816,12 +862,61 @@ class GuildPlayer:
         from core.ui import CompactPanelView, PanelView
         return CompactPanelView(self) if self.compact else PanelView(self)
 
+    # ------------------------------------------------------ live lyrics
+    def toggle_live_lyrics(self) -> bool:
+        self.live_lyrics = not self.live_lyrics
+        if self.live_lyrics and self.current and self.lyrics_url != self.current.url:
+            asyncio.create_task(self._fetch_lyrics(self.current))
+        return self.live_lyrics
+
+    async def _fetch_lyrics(self, track: Track):
+        from core import lyrics
+        if self.lyrics_url == track.url:
+            return
+        found = await lyrics.find(track)
+        if self.current is track:
+            self.lyrics, self.lyrics_url = found, track.url
+            await self.update_panel()
+
+    # ------------------------------------------------------------- panel
+    def _is_request_panel(self) -> bool:
+        return bool(self.panel_message and self.request_message_id
+                    and self.panel_message.id == self.request_message_id)
+
+    async def _request_panel(self, embed, view, card) -> Optional[discord.Message]:
+        """Request channel: the pinned header message is the panel, edited in place."""
+        channel = self.text_channel
+        if self.panel_message and not self._is_request_panel():
+            try:
+                await self.panel_message.delete()  # panel left in another channel
+            except discord.HTTPException:
+                pass
+        if self.request_message_id:
+            msg = channel.get_partial_message(self.request_message_id)
+            try:
+                await msg.edit(content=None, embed=embed, view=view,
+                               attachments=[card] if card else [])
+                return msg
+            except discord.NotFound:
+                pass
+        msg = await channel.send(embed=embed, view=view, **({"file": card} if card else {}))
+        self.request_message_id = msg.id
+        await self.bot.db.set_setting(self.guild.id, "request_message", msg.id)
+        return msg
+
     async def send_panel(self, loading: bool = False):
         from core.ui import build_now_playing
         self.loading = loading
         card = await self._card_file(mode="loading" if loading else "play")
         self.has_card = card is not None
         embed = build_now_playing(self)
+        if self.in_request_channel():
+            self._panel_sig = None
+            try:
+                self.panel_message = await self._request_panel(embed, self.make_view(), card)
+            except discord.HTTPException as exc:
+                log.debug("request panel failed: %s", exc)
+            return
         try:
             if self.panel_message:
                 try:
@@ -863,8 +958,13 @@ class GuildPlayer:
             else:
                 self.has_card = False
                 self._panel_sig = None
-                await self.panel_message.edit(embed=build_idle_embed(), view=None,
-                                              attachments=[])
+                if self._is_request_panel():
+                    from core.ui import RequestIdleView, build_request_idle_embed
+                    await self.panel_message.edit(embed=build_request_idle_embed(),
+                                                  view=RequestIdleView(), attachments=[])
+                else:
+                    await self.panel_message.edit(embed=build_idle_embed(), view=None,
+                                                  attachments=[])
                 self.panel_message = None
         except discord.NotFound:
             self.panel_message = None
@@ -873,7 +973,9 @@ class GuildPlayer:
 
     async def _panel_loop(self):
         while not self.destroyed:
-            await asyncio.sleep(config.PANEL_REFRESH)
+            karaoke = (self.live_lyrics and self.lyrics and self.lyrics.synced
+                       and self.current and self.lyrics_url == self.current.url)
+            await asyncio.sleep(config.LYRICS_REFRESH if karaoke else config.PANEL_REFRESH)
             if self.current and self.panel_message and not self.is_paused:
                 await self.update_panel(tick=True)
 

@@ -12,7 +12,11 @@
 
 **เสียงและเนื้อเพลง**: ปรับความดังทุกเพลงให้เท่ากันด้วย FFmpeg loudnorm (เปิดเป็นค่าเริ่มต้น ปิดได้ด้วย `/settings normalize` หรือ `NORMALIZE=false`) เนื้อเพลงจาก lrclib.net ผ่าน `/lyrics` หรือปุ่ม 🎤 ถ้าเป็นแบบ synced มีปุ่ม 📍 ไปท่อนที่กำลังร้อง
 
-**UI**: panel มีปุ่ม ⏪ ⏩ กรอ 10 วินาที, หน้าคิวเลือกเพลงแล้วกด เล่นเลย / ขึ้นถัดไป / ลบ ได้ทันที, `/play` ตอบเป็น embed มีปก ลำดับในคิว และเวลาที่จะได้เล่น, ปุ่มควบคุมที่เปลี่ยนตามสถานะ (ยังใช้ได้หลัง restart), dropdown ระดับเสียง, โหมด compact สำหรับมือถือ, แสดงเวลาที่เหลือได้, คิวแบบแบ่งหน้า, `/search` แบบ dropdown, `/help` แบบเลือกหมวด, สถานะห้องเสียงแสดงชื่อเพลง
+**ห้องขอเพลง**: `/settings request #ห้อง` ตั้งห้องที่พิมพ์ชื่อเพลงหรือวางลิงก์แล้วเพิ่มเข้าคิวเลย ข้อความจะถูกลบอัตโนมัติ (ต้องมีสิทธิ์ Manage Messages) และข้อความหัวห้องจะกลายเป็น panel ตอนเพลงเล่น
+
+**เริ่มต้นใช้งาน**: เข้าเซิร์ฟเวอร์ครั้งแรกบอทจะส่งวิธีใช้ 3 ขั้น ดูอีกครั้งได้ด้วย `/help start:True`
+
+**UI**: panel มีปุ่ม ➕ เพิ่มเพลงผ่านหน้าต่าง (ไม่ต้องพิมพ์ /play), 🎙 เนื้อเพลงสดบน panel (เปลี่ยนท่อนทุก `LYRICS_REFRESH` วินาที), ปุ่ม ⏪ ⏩ กรอ 10 วินาที, หน้าคิวเลือกได้หลายเพลง ค้นในคิว ลบเพลงของฉัน และลบเพลงซ้ำ, เพลงจาก Spotify เลือกคลิป YouTube ที่ความยาวและชื่อตรงที่สุดจาก 5 ผล, หน้าคิวเลือกเพลงแล้วกด เล่นเลย / ขึ้นถัดไป / ลบ ได้ทันที, `/play` ตอบเป็น embed มีปก ลำดับในคิว และเวลาที่จะได้เล่น, ปุ่มควบคุมที่เปลี่ยนตามสถานะ (ยังใช้ได้หลัง restart), dropdown ระดับเสียง, โหมด compact สำหรับมือถือ, แสดงเวลาที่เหลือได้, คิวแบบแบ่งหน้า, `/search` แบบ dropdown, `/help` แบบเลือกหมวด, สถานะห้องเสียงแสดงชื่อเพลง
 
 **การจัดการ**: vote skip, จำกัดเพลงต่อคน, จำกัดความยาวเพลง, กันเพลงซ้ำ, cooldown, โหมด 24/7, undo คิว 5 ครั้งล่าสุด, audit log (`/log`), เพลย์ลิสต์ส่วนตัว (save/load/rename/import/add/removetrack) และจำกัดจำนวนเพลย์ลิสต์ต่อคน, คำสั่ง prefix (`!p`, `!s`, `!q` ฯลฯ)
 
@@ -55,7 +59,7 @@ python bot.py
 | เพลย์ลิสต์ | `/playlist save/load/list/show/delete/rename/import/add/removetrack` |
 | ข้อมูล | `/help` `/ping` `/about` `/log` `/lyrics` |
 | การ์ด | `/card` `/birthday set/remove` |
-| แอดมิน | `/settings card/normalize/247/announce/voteskip/compact/timeformat/show` |
+| แอดมิน | `/settings request/card/normalize/247/announce/voteskip/compact/timeformat/show` |
 
 **Prefix**: ค่าเริ่มต้นคือ `!` เปลี่ยนได้ด้วย `PREFIX` ใน `.env` หรือ mention บอทแทน prefix ก็ได้ คำย่อที่ใช้บ่อย: `!p` เล่น, `!s` ข้าม, `!q` คิว, `!np` เพลงที่เล่นอยู่, `!v 80` เสียง, `!l` วนซ้ำ, `!ff 30` กรอ, `!h` ช่วยเหลือ
 
@@ -79,12 +83,14 @@ core/stream.py    ตัวดาวน์โหลดเสียงสำห�
 core/player.py    คิว ระบบเล่นเพลง gapless watchdog
 core/audio.py     smooth volume และ fade
 core/card.py      การ์ด Now Playing, โหลด, error, แชร์ และสรุปเซสชัน
-core/ui.py        embed, ปุ่ม, หน้า
+core/ui.py        embed, ปุ่ม, หน้า, modal
+core/lyrics.py    เนื้อเพลงจาก lrclib.net
 core/checks.py    ตรวจสิทธิ์
 core/helpdata.py  รายการคำสั่งสำหรับ /help
 cogs/music.py     คำสั่งหลัก, กู้คืนคิว
 cogs/settings.py  ตั้งค่าเซิร์ฟเวอร์
 cogs/cards.py     /card และ /birthday
+cogs/request.py   ห้องขอเพลง
 cogs/playlists.py เพลย์ลิสต์
 cogs/info.py      /help /ping /about
 cogs/prefix.py    คำสั่ง prefix
