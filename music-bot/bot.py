@@ -11,7 +11,12 @@ from discord import app_commands
 from discord.ext import commands
 
 import config
-from core.checks import UserError
+from core import look
+
+if config.UI_STYLE == "groove":
+    look.install()  # before anything sends a message
+
+from core.checks import UserError  # noqa: E402
 from core import card, clean, lyrics
 from core.db import Database
 from core.player import GuildPlayer

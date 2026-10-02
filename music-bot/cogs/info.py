@@ -41,7 +41,7 @@ class WelcomeView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=None)
 
-    @discord.ui.button(emoji="📖", label="คำสั่งทั้งหมด", style=discord.ButtonStyle.primary,
+    @discord.ui.button(emoji="📖", label="คำสั่งทั้งหมด", style=discord.ButtonStyle.secondary,
                        custom_id="mb:welcome:help")
     async def all_commands(self, inter: discord.Interaction, _):
         await inter.response.send_message(embed=help_embed(inter.client),

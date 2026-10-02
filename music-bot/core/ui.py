@@ -142,7 +142,7 @@ class RequestIdleView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=None)
 
-    @discord.ui.button(emoji="➕", label="ขอเพลง", style=discord.ButtonStyle.success,
+    @discord.ui.button(emoji="➕", label="ขอเพลง", style=discord.ButtonStyle.secondary,
                        custom_id="mb:add")
     async def add(self, inter, _):
         await act_add(inter)
@@ -229,8 +229,8 @@ class PagesView(discord.ui.View):
 
     async def on_timeout(self):
         if self.message:
-            try:
-                await self.message.edit(view=None)
+            try:  # keep the page, drop the buttons
+                await self.message.edit(embed=self.pages[self.index], view=None)
             except discord.HTTPException:
                 pass
 
@@ -317,7 +317,7 @@ class QueueView(PagesView):
             raise UserError("เพลงที่เลือกไม่อยู่ในคิวแล้ว")
         return alive
 
-    @discord.ui.button(emoji="▶️", label="เล่นเลย", style=discord.ButtonStyle.success, row=0)
+    @discord.ui.button(emoji="▶️", label="เล่นเลย", style=discord.ButtonStyle.secondary, row=0)
     async def jump_btn(self, inter: discord.Interaction, _):
         def run(p):
             t = self._alive(p)[0]
@@ -325,7 +325,7 @@ class QueueView(PagesView):
             return f"⏩ ไปที่ **{t.title}**"
         await self._apply(inter, "jump", run)
 
-    @discord.ui.button(emoji="⬆️", label="ถัดไป", style=discord.ButtonStyle.primary, row=0)
+    @discord.ui.button(emoji="⬆️", label="ถัดไป", style=discord.ButtonStyle.secondary, row=0)
     async def top_btn(self, inter: discord.Interaction, _):
         def run(p):
             alive = self._alive(p)
@@ -335,7 +335,7 @@ class QueueView(PagesView):
             return f"⬆️ ย้าย {len(alive)} เพลงขึ้นต้นคิว"
         await self._apply(inter, "move", run)
 
-    @discord.ui.button(emoji="🗑", style=discord.ButtonStyle.danger, row=0)
+    @discord.ui.button(emoji="🗑", style=discord.ButtonStyle.secondary, row=0)
     async def remove_btn(self, inter: discord.Interaction, _):
         def run(p):
             alive = self._alive(p)
@@ -492,7 +492,7 @@ class LyricsView(PagesView):
         if not (lyr.synced and p and url):
             self.remove_item(self.now_btn)
 
-    @discord.ui.button(emoji="📍", label="ท่อนปัจจุบัน", style=discord.ButtonStyle.primary)
+    @discord.ui.button(emoji="📍", label="ท่อนปัจจุบัน", style=discord.ButtonStyle.secondary)
     async def now_btn(self, inter: discord.Interaction, _):
         p = self.p
         if not p or not p.current or p.current.url != self.url:
@@ -671,9 +671,9 @@ class PanelView(discord.ui.View):
         self.queue_btn.disabled = not p.queue and not p.current
         if p.is_paused:
             self.pause.emoji = "▶️"
-            self.pause.style = discord.ButtonStyle.success
+            self.pause.style = discord.ButtonStyle.primary
         if p.loop_mode != "off":
-            self.loop.style = discord.ButtonStyle.success
+            self.loop.style = discord.ButtonStyle.primary
             self.loop.emoji = "🔂" if p.loop_mode == "track" else "🔁"
         self.vol_down.disabled = p.volume <= 0
         self.vol_up.disabled = p.volume >= 1.5
@@ -681,7 +681,7 @@ class PanelView(discord.ui.View):
         self.rewind.disabled = self.forward.disabled = not seekable
         self.lyrics_btn.disabled = self.live_lyrics_btn.disabled = not p.current
         if p.live_lyrics:
-            self.live_lyrics_btn.style = discord.ButtonStyle.success
+            self.live_lyrics_btn.style = discord.ButtonStyle.primary
         if not p.current:
             for item in (self.pause, self.skip, self.vol_down, self.vol_up, self.volume_select):
                 item.disabled = True
@@ -699,7 +699,7 @@ class PanelView(discord.ui.View):
     async def rewind(self, inter, _):
         await act_seek(inter, -SEEK_STEP)
 
-    @discord.ui.button(emoji="⏯", style=discord.ButtonStyle.primary, custom_id="mb:pause", row=0)
+    @discord.ui.button(emoji="⏯", style=discord.ButtonStyle.secondary, custom_id="mb:pause", row=0)
     async def pause(self, inter, _):
         await act_pause(inter)
 
@@ -711,7 +711,7 @@ class PanelView(discord.ui.View):
     async def skip(self, inter, _):
         await act_skip(inter)
 
-    @discord.ui.button(emoji="⏹", style=discord.ButtonStyle.danger, custom_id="mb:stop", row=1)
+    @discord.ui.button(emoji="⏹", style=discord.ButtonStyle.secondary, custom_id="mb:stop", row=1)
     async def stop_btn(self, inter, _):
         await act_stop(inter)
 
@@ -732,7 +732,7 @@ class PanelView(discord.ui.View):
     async def lyrics_btn(self, inter, _):
         await act_lyrics(inter)
 
-    @discord.ui.button(emoji="➕", label="เพิ่มเพลง", style=discord.ButtonStyle.success,
+    @discord.ui.button(emoji="➕", label="เพิ่มเพลง", style=discord.ButtonStyle.secondary,
                        custom_id="mb:add", row=2)
     async def add_btn(self, inter, _):
         await act_add(inter)
@@ -770,7 +770,7 @@ class CompactPanelView(discord.ui.View):
         self.prev.disabled = not p.history
         if p.is_paused:
             self.pause.emoji = "▶️"
-            self.pause.style = discord.ButtonStyle.success
+            self.pause.style = discord.ButtonStyle.primary
         if not p.current:
             self.pause.disabled = self.skip.disabled = True
 
@@ -778,7 +778,7 @@ class CompactPanelView(discord.ui.View):
     async def prev(self, inter, _):
         await act_prev(inter)
 
-    @discord.ui.button(emoji="⏯", style=discord.ButtonStyle.primary, custom_id="mbc:pause")
+    @discord.ui.button(emoji="⏯", style=discord.ButtonStyle.secondary, custom_id="mbc:pause")
     async def pause(self, inter, _):
         await act_pause(inter)
 
@@ -786,7 +786,7 @@ class CompactPanelView(discord.ui.View):
     async def skip(self, inter, _):
         await act_skip(inter)
 
-    @discord.ui.button(emoji="⏹", style=discord.ButtonStyle.danger, custom_id="mbc:stop")
+    @discord.ui.button(emoji="⏹", style=discord.ButtonStyle.secondary, custom_id="mbc:stop")
     async def stop_btn(self, inter, _):
         await act_stop(inter)
 

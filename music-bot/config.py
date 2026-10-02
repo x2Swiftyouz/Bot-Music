@@ -73,6 +73,10 @@ TIMEZONE = os.getenv("TIMEZONE", "Asia/Bangkok")  # for birthday badges
 AUTO_CLEAN = _bool("AUTO_CLEAN", True)
 AUTO_CLEAN_SECONDS = max(_int("AUTO_CLEAN_SECONDS", 20), 3)
 
+# Message look: "groove" = every message is one Components V2 container (like the Groove
+# bot), "classic" = embeds as before
+UI_STYLE = os.getenv("UI_STYLE", "groove").strip().lower()
+
 # Health endpoint (0 = disabled)
 HEALTH_PORT = _int("HEALTH_PORT", 8080)
 
