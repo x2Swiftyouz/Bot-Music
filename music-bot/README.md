@@ -1,106 +1,352 @@
-# Discord Music Bot
+<div align="center">
 
-บอทเพลง Discord เขียนด้วย Python (discord.py 2.7 + yt-dlp + FFmpeg) เน้นความเสถียร
+# 🎵 P'Sak Music
 
-## ความสามารถ
+**บอทเพลง Discord ภาษาไทย ที่เน้นความเสถียร หน้าตาสวย และใช้ง่ายสำหรับทุกคนในห้อง**
 
-**การเล่นเพลง**: รองรับ YouTube, SoundCloud, Bandcamp, ลิงก์ Spotify (track/album/playlist) และคำค้น มี autocomplete ใน `/play`, prefetch และ gapless (เปิดเพลงถัดไปรอไว้ก่อน), fade-in ตอนเริ่มเพลง, smooth volume และ fade ตอน pause, skip, stop
+![Python](https://img.shields.io/badge/Python-3.10%2B-3776AB?style=for-the-badge&logo=python&logoColor=white)
+![discord.py](https://img.shields.io/badge/discord.py-2.7-5865F2?style=for-the-badge&logo=discord&logoColor=white)
+![yt-dlp](https://img.shields.io/badge/yt--dlp-latest-FF0000?style=for-the-badge&logo=youtube&logoColor=white)
+![Docker](https://img.shields.io/badge/Docker-ready-2496ED?style=for-the-badge&logo=docker&logoColor=white)
 
-**ความเสถียร**: yt-dlp รันแยก thread, FFmpeg reconnect อัตโนมัติ, voice watchdog ที่ต่อเสียงใหม่เองเมื่อค้าง, เพลงเสียจะข้ามเอง, player loop ที่ crash จะเริ่มใหม่เอง, คิวถูกบันทึกลง SQLite ทุก 20 วินาทีและตอนปิดบอท เมื่อบอท restart จะกลับเข้าห้องและเล่นต่อจากตำแหน่งเดิม, มี `/health` endpoint สำหรับ monitoring
+[ภาพตัวอย่าง](#screenshots) •
+[ความสามารถ](#features) •
+[ติดตั้ง](#install) •
+[ตั้งค่า](#config) •
+[คำสั่ง](#commands) •
+[แก้ปัญหา](#troubleshooting)
 
-**การ์ด**: การ์ด Now Playing (รองรับภาษาไทย ใช้ฟอนต์ Kanit) แสดงชื่อศิลปิน ป้ายแหล่งเพลง เพลงถัดไป และ waveform ที่ขยับตามเพลง waveform ใช้ข้อมูล "ท่อนที่คนเล่นซ้ำมากสุด" ของ YouTube (มีไอคอนไฟตรงท่อนฮิต) และมีขีดแบ่ง chapter พร้อมชื่อ chapter ปัจจุบัน เลือกธีม (เบลอ/สีพื้น/มินิมอล/โพลารอยด์/เทปคาสเซ็ต/นีออน) และรูปทรง (แนวนอน/จัตุรัสที่ย่อตัวอักษรและความสูงตามเนื้อหา) ได้ด้วย `/settings card` โหมด compact ใช้มินิการ์ดแบบแถบบาง ปุ่ม 🖼 ในหน้าคิวสร้างรูปคิวถัดไป `/settings timeformat` แสดงเวลาที่จบเป็นนาฬิกาได้ รูปการ์ดมี alt text สำหรับ screen reader และการ์ดของเพลงถัดไปถูกเตรียมไว้ล่วงหน้าตอน prefetch มีการ์ดตอนกำลังโหลด การ์ดตอนเล่นไม่ได้ และการ์ดสรุปเมื่อจบเซสชัน ป้ายพิเศษ "ฮิต" สำหรับเพลงที่เปิดบ่อยในเซิร์ฟเวอร์ และป้ายวันเกิด (`/birthday set`) แชร์การ์ดเพลงที่ฟังอยู่ด้วย `/card` การ์ดส่งเป็น WebP และจะอัปโหลดใหม่เฉพาะเมื่อมีอะไรเปลี่ยน (หรือทุก `CARD_REFRESH` วินาที)
+<img src="docs/images/card-wide.webp" alt="การ์ด Now Playing แบบแนวนอน" width="760">
 
-**เสียงและเนื้อเพลง**: ปรับความดังทุกเพลงให้เท่ากันด้วย FFmpeg loudnorm (เปิดเป็นค่าเริ่มต้น ปิดได้ด้วย `/settings normalize` หรือ `NORMALIZE=false`) เนื้อเพลงจาก lrclib.net ผ่าน `/lyrics` หรือปุ่ม 🎤 ถ้าเป็นแบบ synced มีปุ่ม 📍 ไปท่อนที่กำลังร้อง
+</div>
 
-**ห้องขอเพลง**: `/settings request #ห้อง` ตั้งห้องที่พิมพ์ชื่อเพลงหรือวางลิงก์แล้วเพิ่มเข้าคิวเลย ข้อความจะถูกลบอัตโนมัติ (ต้องมีสิทธิ์ Manage Messages) และข้อความหัวห้องจะกลายเป็น panel ตอนเพลงเล่น
+---
 
-**หน้าตาแบบ Groove**: ทุกข้อความของบอทเป็นกล่องเดียวแบบ Components V2 (เหมือนบอท Groove) รูปการ์ดอยู่บนสุด ตามด้วยหัวข้อ `##` ลิงก์เพลง เส้นคั่น ข้อมูล ปุ่มสีเทา (สีน้ำเงินเมื่อเปิดใช้งาน) และบรรทัดเล็กปิดท้าย panel ที่มีการ์ดเหลือแค่การ์ด ชื่อเพลงบรรทัดเดียว และปุ่มไอคอน 2 แถว (⏮ ⏯ ⏭ ⏹ 🔁 / ⏪ ⏩ 📜 ➕ ⚙️) ปุ่ม ⚙️ เปิดเมนูส่วนตัวสำหรับเสียง ±10, ระดับเสียง, สลับคิว, เนื้อเพลง และเนื้อสด ใต้ปุ่มของ panel มีบรรทัดสถานะรวมโหมดที่เปิดอยู่ (⏸ หยุดอยู่ · 🔁 วนทั้งคิว · 🔊 80% · 🎙 เนื้อสด · 🎚 ความดังเท่ากัน · 🌙 24/7 · 🗳 โหวตข้าม) หน้าคิวแสดงหน้าละ 5 เพลง แต่ละเพลงเป็นแถวพร้อมปกเล็ก ศิลปิน คนขอ และเวลาที่จะได้เล่น โค้ดคำสั่งยังสร้าง embed ตามเดิม แล้ว `core/look.py` แปลงเป็นกล่องตอนส่ง กลับไปใช้ embed แบบเดิมได้ด้วย `UI_STYLE=classic`
+<a id="screenshots"></a>
 
-**ลบข้อความอัตโนมัติ**: ข้อความตอบกลับของ `/play` `/skip` `!p` ฯลฯ ข้อความคำสั่ง prefix ของผู้ใช้ และข้อความแจ้งเตือนของบอท ลบตัวเองหลัง `AUTO_CLEAN_SECONDS` วินาที (ค่าเริ่มต้น 20) panel "จบคิวแล้ว" ก็ถูกลบ เหลือแค่ panel ที่กำลังเล่น การ์ดสรุปเซสชันอยู่ 10 นาที `/queue` `/nowplaying` อยู่ 2 นาที ส่วน `/lyrics` `/card` ไม่ถูกลบ ปิดได้ด้วย `/settings autoclean` หรือ `AUTO_CLEAN=false` (การลบข้อความของผู้ใช้ต้องให้บอทมีสิทธิ์ Manage Messages)
+## 📸 ภาพตัวอย่าง
 
-**เริ่มต้นใช้งาน**: เข้าเซิร์ฟเวอร์ครั้งแรกบอทจะส่งวิธีใช้ 3 ขั้น ดูอีกครั้งได้ด้วย `/help start:True`
+ภาพทั้งหมดเรนเดอร์จากโค้ดจริงของบอท (ฟอนต์ Kanit รองรับภาษาไทยเต็มรูปแบบ)
 
-**UI**: panel มีปุ่ม ➕ เพิ่มเพลงผ่านหน้าต่าง (ไม่ต้องพิมพ์ /play), 🎙 เนื้อเพลงสดบน panel (เปลี่ยนท่อนทุก `LYRICS_REFRESH` วินาที), ปุ่ม ⏪ ⏩ กรอ 10 วินาที, หน้าคิวเลือกได้หลายเพลง ค้นในคิว ลบเพลงของฉัน และลบเพลงซ้ำ, เพลงจาก Spotify เลือกคลิป YouTube ที่ความยาวและชื่อตรงที่สุดจาก 5 ผล, หน้าคิวเลือกเพลงแล้วกด เล่นเลย / ขึ้นถัดไป / ลบ ได้ทันที, `/play` ตอบเป็น embed มีปก ลำดับในคิว และเวลาที่จะได้เล่น, ปุ่มควบคุมที่เปลี่ยนตามสถานะ (ยังใช้ได้หลัง restart), dropdown ระดับเสียง, โหมด compact สำหรับมือถือ, แสดงเวลาที่เหลือได้, คิวแบบแบ่งหน้า, `/search` แบบ dropdown, `/help` แบบเลือกหมวด, สถานะห้องเสียงแสดงชื่อเพลง
+<table>
+<tr>
+<td colspan="2" align="center"><b>ธีมการ์ด 6 แบบ</b><br><sub>เบลอจากปก · สีพื้น · มินิมอล · โพลารอยด์ · เทปคาสเซ็ต · นีออน</sub><br><img src="docs/images/themes.webp" alt="ธีมการ์ดทั้ง 6 แบบ" width="760"></td>
+</tr>
+<tr>
+<td align="center" width="50%"><b>การ์ดคิว</b><br><img src="docs/images/queue-card.webp" alt="การ์ดคิวถัดไป" width="380"></td>
+<td align="center" width="50%"><b>การ์ดสรุปเซสชัน</b><br><img src="docs/images/recap.webp" alt="การ์ดสรุปเซสชัน" width="380"></td>
+</tr>
+<tr>
+<td align="center"><b>รูปทรงจัตุรัส (มือถือ)</b><br><img src="docs/images/card-square.webp" alt="การ์ดแบบจัตุรัส" width="300"></td>
+<td align="center"><b>มินิการ์ด (โหมด compact)</b><br><img src="docs/images/card-mini.webp" alt="มินิการ์ด" width="380"></td>
+</tr>
+</table>
 
-**การจัดการ**: vote skip, จำกัดเพลงต่อคน, จำกัดความยาวเพลง, กันเพลงซ้ำ, cooldown, โหมด 24/7, undo คิว 5 ครั้งล่าสุด, audit log (`/log`), เพลย์ลิสต์ส่วนตัว (save/load/rename/import/add/removetrack) และจำกัดจำนวนเพลย์ลิสต์ต่อคน, คำสั่ง prefix (`!p`, `!s`, `!q` ฯลฯ)
+---
 
-## ตั้งค่า Discord
+<a id="features"></a>
 
-1. สร้าง Application ที่ https://discord.com/developers/applications แล้วสร้าง Bot และคัดลอก token
-2. ในหน้า Bot เปิด **Message Content Intent** (จำเป็นสำหรับคำสั่ง prefix ถ้าไม่ใช้ ให้ตั้ง `MESSAGE_CONTENT=false`)
-3. เชิญบอทด้วย scope `bot` และ `applications.commands` และสิทธิ์ View Channels, Send Messages, Embed Links, Attach Files, Add Reactions, Connect, Speak, Set Voice Channel Status
+## ✨ ความสามารถ
 
-## ติดตั้งแบบ Docker (แนะนำ)
+### 🎶 เล่นเพลง
+- รองรับ **YouTube, Spotify** (track / album / playlist), **SoundCloud, Bandcamp**, ไฟล์เสียงแนบ (ในห้องขอเพลง) และคำค้นภาษาไทย
+- **Gapless**: เตรียมเพลงถัดไปไว้ล่วงหน้า เพลงต่อกันทันทีไม่มีช่วงเงียบ
+- **Spotify จับคู่แม่น**: ค้น YouTube 5 ผลแล้วเลือกคลิปที่ความยาวและชื่อตรงที่สุด เลี่ยงเวอร์ชัน live, cover และ remix
+- **ปรับความดังให้เท่ากันทุกเพลง** (FFmpeg loudnorm), fade-in / fade-out และปรับเสียงแบบนุ่มนวล
+- **เนื้อเพลง** จาก lrclib.net ทั้งแบบเต็มและแบบ synced พร้อม **เนื้อเพลงสด (karaoke)** บน panel
+- autocomplete ใน `/play`, `/search` แบบเลือกจากรายการ, กรอ, ย้อน, วนซ้ำ และ undo คิว 5 ครั้งล่าสุด
 
+### 🖼️ การ์ด Now Playing
+- แสดงชื่อเพลง ศิลปิน ป้ายแหล่งเพลง เพลงถัดไปพร้อมปกเล็ก และ chip สถานะที่ใช้ไอคอน
+- **Waveform จากข้อมูลจริง**: ใช้ "ท่อนที่คนเล่นซ้ำมากสุด" ของ YouTube มีไอคอน 🔥 ตรงท่อนฮิต และขีดแบ่ง chapter พร้อมชื่อ chapter ปัจจุบัน
+- **6 ธีม × 3 รูปทรง** (แนวนอน · จัตุรัส · มินิ) สีดึงจากปกอัตโนมัติ และตรวจ contrast ให้อ่านง่าย
+- การ์ดตอนกำลังโหลด, การ์ดตอนเล่นไม่ได้, การ์ดคิว, การ์ดสรุปเซสชัน และ `/card` สำหรับแชร์
+- ป้าย **ฮิต ×N** สำหรับเพลงที่เปิดบ่อยในเซิร์ฟเวอร์ และป้าย **วันเกิดคนขอ** (`/birthday set`)
+- ส่งเป็น WebP มี alt text สำหรับ screen reader และอัปโหลดใหม่เฉพาะเมื่อมีอะไรเปลี่ยน
+
+### 🎛️ Panel และหน้าตา
+- ทุกข้อความเป็น **กล่องเดียวแบบ Components V2** (สไตล์ Groove) หรือใช้ embed แบบเดิมได้ด้วย `UI_STYLE=classic`
+- Panel กระชับ: การ์ด, ชื่อเพลงบรรทัดเดียว, ปุ่มไอคอน 2 แถว และบรรทัดสถานะเล็กที่บอกโหมดที่เปิดอยู่
+  ```
+  ⏮  ⏯  ⏭  ⏹  🔁
+  ⏪  ⏩  📜  ➕  ⚙️
+  -# 🔁 วนทั้งคิว · 🔊 80% · 🎙 เนื้อสด · 🎚 ความดังเท่ากัน
+  ```
+- ➕ เพิ่มเพลงผ่านหน้าต่างโดยไม่ต้องพิมพ์คำสั่ง, ⚙️ เมนูส่วนตัวสำหรับเสียง, สลับคิว และเนื้อเพลง
+- **หน้าคิว**: แต่ละเพลงเป็นแถวพร้อมปก เลือกได้หลายเพลง สั่งเล่นเลย / ขึ้นถัดไป / ลบได้ ค้นในคิว ลบเพลงของฉัน ลบเพลงซ้ำ และสร้างรูปคิว
+- ปุ่มยังกดได้หลังบอทรีสตาร์ท มีโหมด compact สำหรับมือถือ และสถานะห้องเสียงแสดงชื่อเพลง
+
+### 🧹 ห้องสะอาด
+- **ห้องขอเพลง** (`/settings request`): พิมพ์ชื่อเพลงหรือวางลิงก์ในห้องแล้วเล่นเลย ข้อความถูกลบอัตโนมัติ และข้อความหัวห้องกลายเป็น panel
+- **ลบข้อความอัตโนมัติ**: คำตอบของคำสั่ง ข้อความ `!p` ของผู้ใช้ และข้อความแจ้งเตือนลบตัวเอง เหลือแค่ panel ที่กำลังเล่น
+
+### 🛡️ ความเสถียร
+- **กู้คืนคิวหลังรีสตาร์ท**: กลับเข้าห้องและเล่นต่อจากตำแหน่งเดิม (บันทึกลง SQLite ทุก 20 วินาที)
+- **Voice watchdog** ต่อเสียงใหม่เองเมื่อค้าง, FFmpeg reconnect อัตโนมัติ และเพลงที่เล่นไม่ได้จะถูกข้ามพร้อมการ์ดแจ้งเหตุผล
+- yt-dlp แยก thread pool จาก autocomplete จึงไม่บล็อกการเล่น, player loop ที่ crash จะเริ่มใหม่เอง และมี `/health` endpoint สำหรับ monitoring
+
+### 👥 การจัดการ
+- vote skip, จำกัดเพลงต่อคนและความยาวเพลง, กันเพลงซ้ำ, cooldown และโหมด 24/7
+- เพลย์ลิสต์ส่วนตัว (save / load / import / rename / แก้ไขเพลง), audit log (`/log`) และคำสั่ง prefix แบบย่อ
+- ข้อความเริ่มต้นใช้งาน 3 ขั้น ส่งครั้งแรกที่บอทเข้าเซิร์ฟเวอร์
+
+---
+
+<a id="install"></a>
+
+## 🚀 ติดตั้ง
+
+### สิ่งที่ต้องมี
+| | |
+|---|---|
+| **Python** | 3.10 ขึ้นไป (Docker image ใช้ 3.12) |
+| **FFmpeg** | ติดตั้งในระบบ ถ้าไม่มี บอทจะใช้ตัวที่มากับ `imageio-ffmpeg` แทน |
+| **Deno** | yt-dlp ใช้ถอดรหัส YouTube ติดตั้งให้อัตโนมัติผ่าน pip ถ้ายังไม่มี |
+| **Discord Bot Token** | จาก [Discord Developer Portal](https://discord.com/developers/applications) |
+
+### 1. สร้างบอทใน Discord
+1. สร้าง Application ใหม่ แล้วไปที่หน้า **Bot** เพื่อคัดลอก token
+2. เปิด **Message Content Intent** (จำเป็นสำหรับคำสั่ง prefix และห้องขอเพลง ถ้าไม่ใช้ ให้ตั้ง `MESSAGE_CONTENT=false`)
+3. เชิญบอทด้วย scope `bot` + `applications.commands` และให้สิทธิ์ต่อไปนี้
+
+   | สิทธิ์ | ใช้ทำอะไร |
+   |---|---|
+   | View Channels, Send Messages, Embed Links, Attach Files | ส่ง panel และการ์ด |
+   | Connect, Speak | เล่นเพลงในห้องเสียง |
+   | Set Voice Channel Status | แสดงชื่อเพลงที่ห้องเสียง |
+   | Manage Messages | ลบข้อความอัตโนมัติและห้องขอเพลง (แนะนำ) |
+
+### 2. รันด้วย Docker (แนะนำ)
 ```bash
-cp .env.example .env     # ใส่ DISCORD_TOKEN
+cp .env.example .env          # ใส่ DISCORD_TOKEN
 docker compose up -d --build
 docker compose logs -f
 ```
+ข้อมูลทั้งหมดเก็บอยู่ใน `data/` และ yt-dlp อัปเดตเองทุกครั้งที่ container เริ่ม ถ้า YouTube มีปัญหา ลอง `docker compose restart`
 
-ข้อมูลทั้งหมดอยู่ในโฟลเดอร์ `data/` และ yt-dlp จะอัปเดตเองทุกครั้งที่ container เริ่มใหม่ หาก YouTube มีปัญหาให้รัน `docker compose restart`
-
-## ติดตั้งแบบปกติ
-
-ต้องมี Python 3.10 ขึ้นไป, FFmpeg และ Deno (https://deno.land) อยู่ใน PATH
-
+### 3. หรือรันแบบปกติ
 ```bash
 python -m venv .venv
-source .venv/bin/activate        # Windows: .venv\Scripts\activate
+source .venv/bin/activate     # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
 cp .env.example .env
 python bot.py
 ```
+บน Linux server ใช้ `musicbot.service` กับ systemd ได้ (อัปเดต yt-dlp และรีสตาร์ทบอทให้อัตโนมัติ)
 
-บน Linux server ใช้ไฟล์ `musicbot.service` กับ systemd ได้ ไฟล์นี้จะอัปเดต yt-dlp และ restart บอทให้อัตโนมัติ
+---
 
-## คำสั่ง
+<a id="config"></a>
 
-| หมวด | คำสั่ง |
+## ⚙️ ตั้งค่า (.env)
+
+ค่าทั้งหมดอยู่ใน [`.env.example`](.env.example) มีแค่ `DISCORD_TOKEN` ที่จำเป็น นอกนั้นมีค่าเริ่มต้นให้แล้ว
+
+<details>
+<summary><b>พื้นฐาน</b></summary>
+
+| ตัวแปร | ค่าเริ่มต้น | คำอธิบาย |
+|---|---|---|
+| `DISCORD_TOKEN` | — | token ของบอท **(จำเป็น)** |
+| `PREFIX` | `!` | prefix ของคำสั่งแบบพิมพ์ |
+| `MESSAGE_CONTENT` | `true` | ใช้ Message Content Intent (prefix และห้องขอเพลง) |
+| `OWNER_ID` | — | ID ของเจ้าของบอท |
+| `DB_PATH` | `data/musicbot.db` | ไฟล์ฐานข้อมูล SQLite |
+| `HEALTH_PORT` | `8080` | พอร์ตของ `/health` (`0` = ปิด) |
+| `TIMEZONE` | `Asia/Bangkok` | โซนเวลาสำหรับเวลาจบเพลงบนการ์ดและป้ายวันเกิด |
+</details>
+
+<details>
+<summary><b>การเล่นและขีดจำกัด</b></summary>
+
+| ตัวแปร | ค่าเริ่มต้น | คำอธิบาย |
+|---|---|---|
+| `DEFAULT_VOLUME` | `50` | ระดับเสียงเริ่มต้น (%) |
+| `NORMALIZE` | `true` | ปรับความดังทุกเพลงให้เท่ากัน |
+| `NORMALIZE_FILTER` | `loudnorm=I=-14:LRA=11:TP=-1.5` | filter ของ FFmpeg (เครื่องเล็กลอง `dynaudnorm`) |
+| `VOLUME_RAMP_MS` / `FADE_MS` | `800` / `400` | ความนุ่มของการปรับเสียงและ fade (`0` = ปิด) |
+| `PRELOAD_SECONDS` | `12` | เตรียมเพลงถัดไปก่อนจบกี่วินาที (gapless) |
+| `WATCHDOG_SECONDS` | `15` | เสียงค้างนานเท่านี้จะต่อใหม่ |
+| `IDLE_TIMEOUT` / `ALONE_TIMEOUT` | `300` / `30` | ออกจากห้องเมื่อคิวว่าง / ไม่มีคนในห้อง (วินาที) |
+| `MAX_QUEUE` / `MAX_PER_USER` | `500` / `100` | จำนวนเพลงสูงสุดในคิว / ต่อคน (`0` = ไม่จำกัด) |
+| `MAX_DURATION` | `0` | ความยาวเพลงสูงสุด (วินาที, `0` = ไม่จำกัด) |
+| `PLAY_COOLDOWN` | `3` | ระยะห่างการขอเพลงต่อคน (วินาที) |
+| `PLAYLIST_LIMIT` | `10` | จำนวนเพลย์ลิสต์ต่อคน |
+</details>
+
+<details>
+<summary><b>การ์ดและหน้าตา</b></summary>
+
+| ตัวแปร | ค่าเริ่มต้น | คำอธิบาย |
+|---|---|---|
+| `UI_STYLE` | `groove` | `groove` = กล่อง Components V2, `classic` = embed แบบเดิม |
+| `MUSIC_CARD` | `true` | แสดงการ์ดรูป |
+| `CARD_REFRESH` | `20` | อัปโหลดการ์ดใหม่อย่างน้อยทุกกี่วินาทีระหว่างเล่น |
+| `PANEL_REFRESH` / `LYRICS_REFRESH` | `10` / `3` | อัปเดต panel ทุกกี่วินาที (ปกติ / ตอนเปิดเนื้อเพลงสด) |
+| `SESSION_SUMMARY` | `true` | ส่งการ์ดสรุปเมื่อจบเซสชัน |
+| `HOT_THRESHOLD` | `5` | จำนวนครั้งที่เปิดก่อนขึ้นป้าย "ฮิต" |
+| `AUTO_CLEAN` / `AUTO_CLEAN_SECONDS` | `true` / `20` | ลบข้อความตอบกลับและข้อความบอทอัตโนมัติ |
+</details>
+
+<details>
+<summary><b>แหล่งเพลงและ yt-dlp</b></summary>
+
+| ตัวแปร | ค่าเริ่มต้น | คำอธิบาย |
+|---|---|---|
+| `SPOTIFY_CLIENT_ID` / `SPOTIFY_CLIENT_SECRET` | — | เปิดใช้ลิงก์ Spotify ([สร้างที่นี่](https://developer.spotify.com/dashboard)) |
+| `YTDLP_COOKIES` | — | ไฟล์ cookies.txt เมื่อ YouTube ขอยืนยันว่าไม่ใช่บอท |
+| `AUTOCOMPLETE` | `true` | ค้นหาสดระหว่างพิมพ์ `/play` |
+| `YTDL_TIMEOUT` | `45` | เวลาสูงสุดต่อการค้นหนึ่งครั้ง (วินาที) |
+| `YTDL_DEBUG` | `false` | log ของ yt-dlp แบบละเอียด |
+| `FFMPEG_PATH` | อัตโนมัติ | path ของ ffmpeg |
+| `STREAM_MODE` | `auto` | `direct` = FFmpeg ดึงเสียงเอง, `pipe` = Python ดึงแล้วส่งให้ FFmpeg |
+</details>
+
+ค่าส่วนใหญ่ปรับรายเซิร์ฟเวอร์ได้ด้วย `/settings` โดยไม่ต้องรีสตาร์ท
+
+---
+
+<a id="commands"></a>
+
+## 📖 คำสั่ง
+
+ใช้ได้ทั้ง slash command (`/play`) และ prefix (`!p`) ทุกคนที่อยู่ห้องเสียงเดียวกับบอทควบคุมเพลงได้
+
+<details open>
+<summary><b>🎵 เล่นเพลง</b></summary>
+
+| คำสั่ง | คำอธิบาย |
 |---|---|
-| เล่น | `/play` `/search` `/skip` `/previous` `/pause` `/resume` `/stop` `/seek` `/forward` `/backward` `/replay` `/volume` |
-| คิว | `/queue` `/nowplaying` `/remove` `/move` `/jump` `/shuffle` `/clear` `/undo` `/loop` |
-| เพลย์ลิสต์ | `/playlist save/load/list/show/delete/rename/import/add/removetrack` |
-| ข้อมูล | `/help` `/ping` `/about` `/log` `/lyrics` |
-| การ์ด | `/card` `/birthday set/remove` |
-| แอดมิน | `/settings autoclean/request/card/normalize/247/announce/voteskip/compact/timeformat/show` |
+| `/play <ชื่อ/ลิงก์> [next]` | เล่นเพลง เพลย์ลิสต์ Spotify หรือคำค้น (`next` = แทรกเป็นเพลงถัดไป) |
+| `/search <คำค้น>` | ค้นแล้วเลือกจากรายการ |
+| `/pause` · `/resume` | หยุดชั่วคราว / เล่นต่อ |
+| `/skip` | ข้ามเพลง (โหวตเมื่อมีคนในห้องมากกว่า 2 คน) |
+| `/previous` · `/replay` | เพลงก่อนหน้า / เล่นใหม่ตั้งแต่ต้น |
+| `/seek <เวลา>` · `/forward` · `/backward` | กรอเพลง เช่น `1:30` |
+| `/volume <0-150>` | ปรับเสียง |
+| `/stop` | หยุด ล้างคิว และออกจากห้อง |
+| `/nowplaying` | panel ของเพลงที่กำลังเล่น |
+| `/lyrics [ชื่อเพลง]` | เนื้อเพลง |
+| `/card` | แชร์การ์ดเพลงที่กำลังฟัง |
+</details>
 
-**Prefix**: ค่าเริ่มต้นคือ `!` เปลี่ยนได้ด้วย `PREFIX` ใน `.env` หรือ mention บอทแทน prefix ก็ได้ คำย่อที่ใช้บ่อย: `!p` เล่น, `!s` ข้าม, `!q` คิว, `!np` เพลงที่เล่นอยู่, `!v 80` เสียง, `!l` วนซ้ำ, `!ff 30` กรอ, `!h` ช่วยเหลือ
+<details>
+<summary><b>📜 คิว</b></summary>
 
-ทุกคนที่อยู่ห้องเสียงเดียวกับบอทควบคุมเพลงได้ การข้ามเพลงจะใช้การโหวตเมื่อมีคนในห้องมากกว่า 2 คน ยกเว้นคนที่ขอเพลงนั้นหรือผู้ที่มีสิทธิ์ Manage Server
+| คำสั่ง | คำอธิบาย |
+|---|---|
+| `/queue` | ดูคิวและจัดการเพลงจากหน้าคิว |
+| `/remove` · `/move` · `/jump` | ลบ / ย้าย / ข้ามไปเพลงลำดับที่ระบุ |
+| `/shuffle` · `/clear` · `/loop` | สลับคิว / ล้างคิว / โหมดวนซ้ำ |
+| `/undo` | ย้อนการแก้คิวล่าสุด |
+</details>
 
-## แก้ปัญหา
+<details>
+<summary><b>📂 เพลย์ลิสต์</b></summary>
 
-- `Sign in to confirm you're not a bot`: export cookies.txt จาก browser แล้วตั้ง `YTDLP_COOKIES=data/cookies.txt`
-- เพลงเล่นไม่ได้ทั้งหมด: อัปเดต yt-dlp ก่อน (`pip install -U "yt-dlp[default]"`) และตรวจว่ามี Deno
-- `PrivilegedIntentsRequired`: เปิด Message Content Intent ใน Developer Portal หรือตั้ง `MESSAGE_CONTENT=false`
-- slash command ไม่ขึ้น: global sync อาจใช้เวลาสักพัก ลองปิดเปิด Discord ใหม่
+| คำสั่ง | คำอธิบาย |
+|---|---|
+| `/playlist save <ชื่อ>` | บันทึกเพลงปัจจุบันและคิว |
+| `/playlist load <ชื่อ> [shuffle]` | เล่นเพลย์ลิสต์ |
+| `/playlist list` · `/playlist show` | รายการเพลย์ลิสต์ / ดูเพลงข้างใน |
+| `/playlist import <ลิงก์> <ชื่อ>` | นำเข้าจาก YouTube หรือ Spotify |
+| `/playlist add` · `/playlist removetrack` | เพิ่ม / ลบเพลงในเพลย์ลิสต์ |
+| `/playlist rename` · `/playlist delete` | เปลี่ยนชื่อ / ลบ |
+</details>
 
-## โครงสร้าง
+<details>
+<summary><b>🛠️ ตั้งค่าเซิร์ฟเวอร์ (ต้องมีสิทธิ์ Manage Server)</b></summary>
+
+| คำสั่ง | คำอธิบาย |
+|---|---|
+| `/settings request [#ห้อง]` | ตั้งห้องขอเพลง (เว้นว่าง = ปิด) |
+| `/settings card [theme] [layout]` | ธีมและรูปทรงของการ์ด |
+| `/settings autoclean` | ลบข้อความอัตโนมัติ |
+| `/settings normalize` | ปรับความดังให้เท่ากัน |
+| `/settings compact` | panel แบบย่อสำหรับมือถือ |
+| `/settings timeformat` | เวลาด้านขวา: ความยาว / เวลาที่เหลือ / เวลาที่จบ |
+| `/settings 247` · `announce` · `voteskip` | อยู่ห้องตลอด / ประกาศเพลงใหม่ / โหวตข้าม |
+| `/settings show` | ดูค่าทั้งหมด |
+</details>
+
+<details>
+<summary><b>ℹ️ อื่นๆ</b></summary>
+
+| คำสั่ง | คำอธิบาย |
+|---|---|
+| `/help [start]` | คำสั่งทั้งหมด หรือวิธีเริ่มต้นใช้งาน 3 ขั้น |
+| `/ping` · `/about` | ความเร็วและข้อมูลบอท |
+| `/log` | ดูว่าใครทำอะไรกับบอทล่าสุด |
+| `/birthday set` · `/birthday remove` | ตั้งวันเกิดเพื่อรับป้ายบนการ์ด |
+</details>
+
+### ⌨️ คำย่อ prefix
+| คำย่อ | คำสั่ง | คำย่อ | คำสั่ง |
+|---|---|---|---|
+| `!p` | play | `!q` | queue |
+| `!pn` | play เป็นเพลงถัดไป | `!np` | nowplaying |
+| `!s` `!n` | skip | `!v 80` | volume |
+| `!b` `!prev` | previous | `!l` | loop |
+| `!r` | resume | `!sh` | shuffle |
+| `!dc` `!leave` | stop | `!rm` `!mv` `!j` | remove / move / jump |
+| `!ff` `!rw` | forward / backward | `!u` | undo |
+| `!ly` | lyrics | `!share` | card |
+| `!find` | search | `!h` | help |
+
+mention บอทแทน prefix ได้ และเปลี่ยน prefix ได้ด้วย `PREFIX` ใน `.env`
+
+---
+
+## 🧩 โครงสร้างโปรเจกต์
 
 ```
-bot.py            entry point, health endpoint, error handler, graceful shutdown
-config.py         อ่านค่าจาก .env
-core/db.py        SQLite
-core/sources.py   yt-dlp, Spotify, Track
-core/stream.py    ตัวดาวน์โหลดเสียงสำหรับ pipe mode
-core/player.py    คิว ระบบเล่นเพลง gapless watchdog
-core/audio.py     smooth volume และ fade
-core/card.py      การ์ด Now Playing, โหลด, error, แชร์ และสรุปเซสชัน
-core/ui.py        embed, ปุ่ม, หน้า, modal
-core/look.py      แปลงทุกข้อความเป็นกล่องแบบ Groove (Components V2)
-core/lyrics.py    เนื้อเพลงจาก lrclib.net
-core/checks.py    ตรวจสิทธิ์
-core/helpdata.py  รายการคำสั่งสำหรับ /help
-cogs/music.py     คำสั่งหลัก, กู้คืนคิว
-cogs/settings.py  ตั้งค่าเซิร์ฟเวอร์
-cogs/cards.py     /card และ /birthday
-cogs/request.py   ห้องขอเพลง
-cogs/playlists.py เพลย์ลิสต์
-cogs/info.py      /help /ping /about
-cogs/prefix.py    คำสั่ง prefix
+bot.py              จุดเริ่มต้น, health endpoint, error handler, ปิดบอทอย่างปลอดภัย
+config.py           อ่านค่าจาก .env
+core/
+  player.py         คิว, ระบบเล่นเพลง, gapless, watchdog, panel
+  sources.py        yt-dlp, Spotify, การจับคู่เพลง
+  stream.py         ตัวดาวน์โหลดเสียงสำหรับ pipe mode
+  audio.py          smooth volume และ fade
+  card.py           การ์ดรูปทุกแบบ (Pillow)
+  ui.py             embed, ปุ่ม, หน้าคิว, modal
+  look.py           แปลงทุกข้อความเป็นกล่อง Components V2
+  lyrics.py         เนื้อเพลงจาก lrclib.net
+  clean.py          ลบข้อความอัตโนมัติ
+  db.py             SQLite
+  checks.py         ตรวจสิทธิ์
+  helpdata.py       รายการคำสั่งสำหรับ /help
+cogs/
+  music.py          คำสั่งหลัก, กู้คืนคิว
+  playlists.py      เพลย์ลิสต์
+  settings.py       ตั้งค่าเซิร์ฟเวอร์
+  request.py        ห้องขอเพลง
+  cards.py          /card และ /birthday
+  info.py           /help, /ping, /about, ข้อความต้อนรับ
+  prefix.py         คำสั่ง prefix
 ```
 
-## เครดิต
+---
 
-ฟอนต์ Kanit โดย Cadson Demak ใช้สัญญาอนุญาต SIL Open Font License (ดู `assets/fonts/OFL.txt`) แนวคิด UI บางส่วนได้แรงบันดาลใจจาก Groove Music (MIT License)
+<a id="troubleshooting"></a>
+
+## 🔧 แก้ปัญหา
+
+| อาการ | วิธีแก้ |
+|---|---|
+| `Sign in to confirm you're not a bot` | export cookies.txt จากเบราว์เซอร์ แล้วตั้ง `YTDLP_COOKIES=data/cookies.txt` |
+| เล่นเพลงไม่ได้ทุกเพลง | อัปเดต yt-dlp (`pip install -U "yt-dlp[default]"`) และตรวจว่ามี Deno |
+| `PrivilegedIntentsRequired` | เปิด Message Content Intent ใน Developer Portal หรือตั้ง `MESSAGE_CONTENT=false` |
+| slash command ไม่ขึ้น | การ sync ทั่วโลกใช้เวลาสักพัก ลองปิดแล้วเปิด Discord ใหม่ |
+| ข้อความ `!p` ของผู้ใช้ไม่ถูกลบ | ให้สิทธิ์ **Manage Messages** กับบอทในห้องนั้น |
+| กล่องข้อความแสดงผลไม่ถูกบน Discord เก่า | อัปเดต Discord หรือตั้ง `UI_STYLE=classic` |
+| เสียงสะดุดบนเครื่องสเปกต่ำ | ตั้ง `NORMALIZE_FILTER=dynaudnorm` หรือ `NORMALIZE=false` |
+| ไม่มีเนื้อเพลง | เครือข่ายต้องเข้าถึง `lrclib.net` ได้ และบางเพลงอาจไม่มีในฐานข้อมูล |
+| log มี `stream mode: pipe` | ปกติเมื่อใช้ FFmpeg ที่มากับ `imageio-ffmpeg` ติดตั้ง FFmpeg ของระบบเพื่อใช้โหมด direct |
+
+---
+
+## 🙏 เครดิต
+
+- ฟอนต์ [Kanit](https://fonts.google.com/specimen/Kanit) โดย Cadson Demak ใช้สัญญาอนุญาต SIL Open Font License (ดู [`assets/fonts/OFL.txt`](assets/fonts/OFL.txt))
+- แนวคิด UI บางส่วนได้แรงบันดาลใจจาก [Groove Music](https://github.com/faisaljs/Groove-Music) (MIT License)
+- ขับเคลื่อนด้วย [discord.py](https://github.com/Rapptz/discord.py), [yt-dlp](https://github.com/yt-dlp/yt-dlp), [FFmpeg](https://ffmpeg.org), [Pillow](https://python-pillow.org) และ [lrclib](https://lrclib.net)
