@@ -29,6 +29,7 @@ from discord.utils import MISSING
 log = logging.getLogger("musicbot.look")
 
 TEXT_LIMIT = 4000  # Discord: total characters of text across one message
+COMPONENT_LIMIT = 40  # Discord: components in one message, nested ones included
 IMAGE_EXT = (".png", ".jpg", ".jpeg", ".webp", ".gif")
 
 
@@ -87,6 +88,37 @@ def _clip(texts: list[ui.TextDisplay]):
         total = sum(len(t.content) for t in texts)
 
 
+def _count(item) -> int:
+    n = 1
+    for child in getattr(item, "children", ()) or ():
+        n += _count(child)
+    if getattr(item, "accessory", None) is not None:
+        n += 1
+    return n
+
+
+def _track_rows(rows, seps: bool, thumbs: bool) -> list[ui.Item]:
+    """Groove queue: one line per song, its cover beside it, a divider between songs."""
+    out: list[ui.Item] = []
+    for i, (text, thumb) in enumerate(rows):
+        if i and seps:
+            out.append(_sep())
+        if thumbs and thumb:
+            out.append(ui.Section(ui.TextDisplay(text), accessory=ui.Thumbnail(thumb)))
+        else:
+            out.append(ui.TextDisplay(text))
+    return out
+
+
+def _texts(items) -> list[ui.TextDisplay]:
+    out = []
+    for item in items:
+        if isinstance(item, ui.TextDisplay):
+            out.append(item)
+        out += _texts(getattr(item, "children", ()) or ())
+    return out
+
+
 class Box(ui.LayoutView):
     """One Groove-style container. Buttons keep the callbacks and checks of the
     original view (`inner`), so existing View classes work unchanged."""
@@ -112,7 +144,19 @@ class Box(ui.LayoutView):
         if text:
             parts.append(say(text))
         footers = []
+        track_rows = None  # (insert index, rows) of a Groove queue page
         for e in embeds:
+            rows = getattr(e, "groove_rows", None)
+            if rows is not None:  # queue page: heading, now playing, one row per song
+                parts.append(say("\n".join(x for x in (_heading(e), e.groove_head) if x)))
+                parts.append(_sep())
+                if rows:
+                    track_rows = (len(parts), rows)
+                else:
+                    parts.append(say(e.description or "-"))
+                if e.footer and e.footer.text:
+                    footers.append(e.footer.text)
+                continue
             head = "\n".join(x for x in (_heading(e), e.description or "") if x)
             if head:
                 if e.thumbnail and e.thumbnail.url:
@@ -130,8 +174,17 @@ class Box(ui.LayoutView):
             parts.append(_sep())
         for f in footers:
             parts.append(say(f"-# {f}"))
-        if not texts and not gallery:
-            parts.insert(0, say("​"))  # a container needs something to show
+        if not texts and not gallery and track_rows is None:
+            parts.insert(0, say("\u200b"))  # a container needs something to show
+        if track_rows is not None:
+            at, rows = track_rows
+            used = 1 + sum(_count(x) for x in parts)  # the container itself counts too
+            for seps, thumbs in ((True, True), (False, True), (False, False)):
+                block = _track_rows(rows, seps, thumbs)
+                if used + sum(_count(x) for x in block) <= COMPONENT_LIMIT:
+                    break
+            texts.extend(_texts(block))
+            parts[at:at] = block
         _clip(texts)
         self.add_item(ui.Container(*parts))
 

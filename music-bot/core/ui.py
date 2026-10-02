@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING, Awaitable, Callable, Optional
 
 import discord
 
+import config
 from core.checks import UserError, control
 from core.lyrics import Lyrics
 from core.sources import SOURCE_COLORS, Track, detect_source, fmt_time
@@ -63,10 +64,10 @@ def build_now_playing(p: "GuildPlayer", card: Optional[str] = None) -> discord.E
     state = "⏸ หยุดชั่วคราว" if p.is_paused else "▶️ กำลังเล่น"
     artist = f"**{t.artist}**\n" if t.artist else ""
     if p.compact:
-        e.description = (f"{artist}{_time_line(p)}\n"
-                         f"-# {t.requester_name or '-'} · {int(p.volume * 100)}%")
+        e.description = f"{artist}{_time_line(p)}\n-# ขอโดย {t.requester_name or '-'}"
         if p.queue:
             e.description += f" · ถัดไป: {p.queue[0].title[:50]}"
+        e.set_footer(text=status_line(p))
         if karaoke := live_lyrics_text(p):
             e.description += "\n" + karaoke
         if has_card:  # slim mini card
@@ -85,10 +86,6 @@ def build_now_playing(p: "GuildPlayer", card: Optional[str] = None) -> discord.E
             e.set_thumbnail(url=t.thumbnail)
         e.description = artist + _time_line(p)
     e.add_field(name="ขอโดย", value=t.requester_name or "-", inline=True)
-    e.add_field(name="เสียง", value=f"{int(p.volume * 100)}%", inline=True)
-    e.add_field(name="วนซ้ำ", value=LOOP_ICON[p.loop_mode], inline=True)
-    if p.stay_247:
-        e.add_field(name="โหมด", value="🌙 24/7", inline=False)
     if p.queue:
         nxt = p.queue[0]
         remain = p.total_remaining()
@@ -100,9 +97,30 @@ def build_now_playing(p: "GuildPlayer", card: Optional[str] = None) -> discord.E
         )
     if karaoke := live_lyrics_text(p):
         e.add_field(name="🎙 เนื้อเพลงสด", value=karaoke, inline=False)
-    if p.skip_votes:
-        e.set_footer(text=f"โหวตข้าม {len(p.skip_votes)}")
+    e.set_footer(text=status_line(p))
     return e
+
+
+def status_line(p: "GuildPlayer") -> str:
+    """Small status strip under the panel: every mode that is on, in one line."""
+    parts = []
+    if p.is_paused:
+        parts.append("⏸ หยุดอยู่")
+    if p.loop_mode == "track":
+        parts.append("🔂 วนเพลงนี้")
+    elif p.loop_mode == "queue":
+        parts.append("🔁 วนทั้งคิว")
+    vol = int(round(p.volume * 100))
+    parts.append(f"{'🔇' if vol == 0 else '🔊'} {vol}%")
+    if p.live_lyrics:
+        parts.append("🎙 เนื้อสด")
+    if p.normalize:
+        parts.append("🎚 ความดังเท่ากัน")
+    if p.stay_247:
+        parts.append("🌙 24/7")
+    if p.skip_votes:
+        parts.append(f"🗳 โหวตข้าม {len(p.skip_votes)}")
+    return " · ".join(parts)
 
 
 LYRICS_LEAD = 1.0  # seconds: the panel edit reaches people a little late
@@ -162,7 +180,35 @@ def queue_items(p: "GuildPlayer", query: str = "") -> list[tuple[int, Track]]:
             if not q or q in f"{t.title} {t.artist} {t.requester_name}".casefold()]
 
 
-def build_queue_pages(p: "GuildPlayer", per_page: int = 10,
+class RowsEmbed(discord.Embed):
+    """An embed that also carries one row per track, so the Groove look can draw each
+    song as its own line with a small cover (see core/look.py). Classic mode ignores it."""
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.groove_head = ""                                   # line above the rows
+        self.groove_rows: list[tuple[str, Optional[str]]] = []  # (text, cover url)
+
+
+def _plain(text: str, limit: int = 55) -> str:
+    """Title safe inside a markdown link (Groove strips brackets too)."""
+    text = "".join(ch for ch in text if ch not in "[]()")
+    return text if len(text) <= limit else text[:limit - 1].rstrip() + "…"
+
+
+def queue_row(p: "GuildPlayer", pos: int, t: Track) -> str:
+    link = f"[{_plain(t.title)}]({t.url})" if t.url.startswith("http") else _plain(t.title)
+    sub = [t.artist] if t.artist else []
+    sub.append(f"ขอโดย {t.requester_name or '-'}")
+    eta = p.eta(pos - 1)
+    sub.append("ถัดไป" if pos == 1 else (f"เล่น {relative_ts(eta)}" if eta is not None else ""))
+    return f"**{pos}.** {link} `{t.fmt_duration()}`\n-# " + " · ".join(x for x in sub if x)
+
+
+QUEUE_PER_PAGE = 5 if config.UI_STYLE == "groove" else 10  # V2 messages: max 40 components
+
+
+def build_queue_pages(p: "GuildPlayer", per_page: int = QUEUE_PER_PAGE,
                       query: str = "") -> list[discord.Embed]:
     items = queue_items(p, query)
     pages = []
@@ -170,7 +216,13 @@ def build_queue_pages(p: "GuildPlayer", per_page: int = 10,
     remain = p.total_remaining()
     title = f"🔍 ค้นในคิว: {query}" if query else "📜 คิวเพลง"
     for page in range(total_pages):
-        e = discord.Embed(title=title[:256], color=SOURCE_COLORS["other"])
+        e = RowsEmbed(title=title[:256], color=SOURCE_COLORS["other"])
+        if p.current:
+            c = p.current
+            e.groove_head = (f"**กำลังเล่น:** [{_plain(c.title)}]({c.url}) "
+                             f"`{fmt_time(p.position)}/{c.fmt_duration()}`")
+        for i, t in items[page * per_page:(page + 1) * per_page]:
+            e.groove_rows.append((queue_row(p, i, t), t.thumbnail))
         if p.current:
             e.add_field(
                 name="กำลังเล่น",
@@ -239,7 +291,7 @@ class QueueView(PagesView):
     """Queue pages plus a multi-select picker: play now, move up, remove,
     search inside the queue, remove all of my songs, remove duplicates."""
 
-    PER_PAGE = 10
+    PER_PAGE = QUEUE_PER_PAGE
 
     def __init__(self, p: "GuildPlayer", author_id: int):
         self.p = p
