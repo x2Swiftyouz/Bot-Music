@@ -12,6 +12,7 @@ from discord.ext import commands
 
 import config
 from core.checks import UserError
+from core import lyrics
 from core.db import Database
 from core.player import GuildPlayer
 from core.sources import spotify
@@ -143,6 +144,7 @@ class MusicBot(commands.Bot):
         if self._health_runner:
             await self._health_runner.cleanup()
         await spotify.close()
+        await lyrics.close()
         await super().close()
         await self.db.close()
 

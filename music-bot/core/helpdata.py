@@ -10,12 +10,13 @@ CATEGORIES: dict[str, tuple[str, list[tuple[str, str]]]] = {
         ("stop", "หยุดและออกจากห้อง"),
         ("nowplaying", "เพลงที่เล่นอยู่ พร้อมปุ่ม"),
         ("card", "แชร์การ์ดเพลงที่กำลังฟัง"),
+        ("lyrics [ชื่อเพลง]", "เนื้อเพลง (มีปุ่ม 📍 ไปท่อนที่กำลังร้อง)"),
         ("seek <เวลา> / forward / backward", "กรอเพลง"),
         ("replay", "เล่นใหม่ตั้งแต่ต้น"),
         ("volume <0-150>", "ปรับเสียง (ไล่ระดับแบบ smooth)"),
     ]),
     "queue": ("📜 คิว", [
-        ("queue", "ดูคิว"),
+        ("queue", "ดูคิว เลือกเพลงแล้วกด เล่นเลย / ขึ้นถัดไป / ลบ ได้"),
         ("remove <ลำดับ>", "ลบเพลง"),
         ("move <จาก> <ไป>", "ย้ายเพลง"),
         ("jump <ลำดับ>", "ข้ามไปเพลงนั้น"),
@@ -35,6 +36,6 @@ CATEGORIES: dict[str, tuple[str, list[tuple[str, str]]]] = {
         ("about", "ข้อมูลบอท"),
         ("log", "ดูว่าใครทำอะไรกับบอท"),
         ("birthday set/remove", "ตั้งวันเกิด การ์ดจะขึ้นป้ายวันเกิดตอนเปิดเพลงของคุณ"),
-        ("settings ...", "ตั้งค่าเซิร์ฟเวอร์ (แอดมิน): card, compact, timeformat, 247, announce, voteskip"),
+        ("settings ...", "ตั้งค่าเซิร์ฟเวอร์ (แอดมิน): card, normalize, compact, timeformat, 247, announce, voteskip"),
     ]),
 }

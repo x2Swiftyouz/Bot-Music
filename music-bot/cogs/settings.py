@@ -88,6 +88,14 @@ class Settings(commands.GroupCog, group_name="settings", group_description="ต�
         if p and (theme or layout):
             await p.update_panel()
 
+    @app_commands.command(description="ปรับความดังทุกเพลงให้เท่ากัน (loudness normalization)")
+    async def normalize(self, inter: discord.Interaction, enabled: bool):
+        await self.bot.db.set_setting(inter.guild_id, "normalize", int(enabled))
+        if p := self._player(inter.guild_id):
+            p.set_normalize(enabled)
+        await inter.response.send_message(
+            f"🎚 ปรับความดังให้เท่ากัน: {'เปิด' if enabled else 'ปิด'}", ephemeral=True)
+
     @app_commands.command(description="ดูค่าทั้งหมด")
     async def show(self, inter: discord.Interaction):
         s = await self.bot.db.get_settings(inter.guild_id)
@@ -100,6 +108,7 @@ class Settings(commands.GroupCog, group_name="settings", group_description="ต�
         e.add_field(name="วนซ้ำ", value=s["loop_mode"])
         e.add_field(name="Compact", value=on(s["compact"]))
         e.add_field(name="เวลา", value="เวลาที่เหลือ" if s["time_remaining"] else "ความยาวเพลง")
+        e.add_field(name="ความดังเท่ากัน", value=on(s["normalize"]))
         e.add_field(name="การ์ด", value=f"{THEME_NAMES.get(s['card_theme'], s['card_theme'])} · "
                                          f"{LAYOUT_NAMES.get(s['card_layout'], s['card_layout'])}")
         await inter.response.send_message(embed=e, ephemeral=True)

@@ -11,7 +11,7 @@ from cogs.info import HelpView, about_embed, help_embed, ping_embed
 from core.checks import UserError, control_member
 from core.player import LOOP_MODES
 from core.sources import fmt_time, parse_time, search_choices
-from core.ui import LOOP_ICON, PagesView, SearchView, build_now_playing, build_queue_pages
+from core.ui import LOOP_ICON, QueueView, SearchView, build_now_playing
 
 log = logging.getLogger("musicbot.prefix")
 
@@ -21,7 +21,7 @@ ALIASES = {
     "r": "resume", "dc": "stop", "leave": "stop", "q": "queue", "np": "nowplaying",
     "v": "volume", "vol": "volume", "l": "loop", "sh": "shuffle", "rm": "remove",
     "mv": "move", "j": "jump", "cl": "clear", "ff": "forward", "rw": "backward",
-    "h": "help", "find": "search", "u": "undo", "share": "card",
+    "h": "help", "find": "search", "u": "undo", "share": "card", "ly": "lyrics",
 }
 
 
@@ -89,8 +89,8 @@ class Prefix(commands.Cog):
             raise UserError("ใจเย็น รอสักครู่")
         self._cooldown[msg.author.id] = now
         async with msg.channel.typing():
-            text = await self.music.enqueue(msg.author, msg.channel, args, front=front)
-        await self._say(msg, text)
+            embed = await self.music.enqueue(msg.author, msg.channel, args, front=front)
+        await self._say(msg, embed=embed)
 
     async def cmd_playnext(self, msg, args):
         await self.cmd_play(msg, args, front=True)
@@ -106,10 +106,10 @@ class Prefix(commands.Cog):
         async def picked(i: discord.Interaction, track):
             await i.response.defer()
             try:
-                text = await self.music.enqueue(i.user, i.channel, track.url, tracks=[track])
+                embed = await self.music.enqueue(i.user, i.channel, track.url, tracks=[track])
+                await i.edit_original_response(content=None, embed=embed, view=None)
             except UserError as exc:
-                text = str(exc)
-            await i.edit_original_response(content=text, embed=None, view=None)
+                await i.edit_original_response(content=str(exc), embed=None, view=None)
 
         lines = [f"`{n}.` {t.title[:80]} `[{t.fmt_duration()}]`" for n, t in enumerate(results, 1)]
         e = discord.Embed(title=f"🔎 {args}", description="\n".join(lines), color=0x5865F2)
@@ -147,9 +147,8 @@ class Prefix(commands.Cog):
         p = self.bot.players.get(msg.guild.id)
         if not p or (not p.current and not p.queue):
             raise UserError("คิวว่าง")
-        pages = build_queue_pages(p)
-        view = PagesView(pages, msg.author.id)
-        view.message = await self._say(msg, embed=pages[0], view=view)
+        view = QueueView(p, msg.author.id)
+        view.message = await self._say(msg, embed=view.pages[0], view=view)
 
     async def cmd_nowplaying(self, msg, args):
         p = self.bot.players.get(msg.guild.id)
@@ -159,6 +158,11 @@ class Prefix(commands.Cog):
         kw = {"file": card} if card else {}
         await self._say(msg, embed=build_now_playing(p, card=card is not None),
                         view=self.bot.panel_view, **kw)
+
+    async def cmd_lyrics(self, msg, args):
+        async with msg.channel.typing():
+            out = await self.music.lyrics_message(msg.guild.id, msg.author.id, args or None)
+        out["view"].message = await self._say(msg, **out)
 
     async def cmd_card(self, msg, args):
         cards = self.bot.get_cog("Cards")

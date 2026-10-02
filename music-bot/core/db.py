@@ -20,7 +20,8 @@ CREATE TABLE IF NOT EXISTS guild_settings (
     compact INTEGER DEFAULT 0,
     time_remaining INTEGER DEFAULT 0,
     card_theme TEXT DEFAULT 'blur',
-    card_layout TEXT DEFAULT 'wide'
+    card_layout TEXT DEFAULT 'wide',
+    normalize INTEGER
 );
 CREATE TABLE IF NOT EXISTS queue_state (
     guild_id INTEGER PRIMARY KEY,
@@ -61,11 +62,13 @@ CREATE TABLE IF NOT EXISTS birthdays (
 SETTING_KEYS = (
     "volume", "loop_mode", "stay_247",
     "vote_skip", "announce", "compact", "time_remaining", "card_theme", "card_layout",
+    "normalize",
 )
 
 # Columns added after the first release: (name, SQL type with default).
 MIGRATIONS = (("compact", "INTEGER DEFAULT 0"), ("time_remaining", "INTEGER DEFAULT 0"),
-              ("card_theme", "TEXT DEFAULT 'blur'"), ("card_layout", "TEXT DEFAULT 'wide'"))
+              ("card_theme", "TEXT DEFAULT 'blur'"), ("card_layout", "TEXT DEFAULT 'wide'"),
+              ("normalize", "INTEGER"))
 
 
 class Database:
@@ -100,6 +103,7 @@ class Database:
             "stay_247": 0, "vote_skip": 1, "announce": 1,
             "compact": 0, "time_remaining": 0,
             "card_theme": "blur", "card_layout": "wide",
+            "normalize": int(config.NORMALIZE),  # NULL in the table = follow .env
         }
         if row:
             for k in SETTING_KEYS:

@@ -14,8 +14,9 @@ from core.checks import UserError, control, get_player
 from core.player import GuildPlayer
 from core.sources import (Track, fmt_time, parse_time, search_busy, search_choices,
                           search_tracks)
-from core.ui import (LOOP_ICON, PagesView, SearchView, build_now_playing,
-                     build_queue_pages, relative_ts)
+from core import lyrics
+from core.ui import (LOOP_ICON, LyricsView, QueueView, SearchView, build_added_embed,
+                     build_now_playing)
 
 log = logging.getLogger("musicbot.music")
 
@@ -47,8 +48,8 @@ class Music(commands.Cog):
 
     async def enqueue(self, member: discord.Member, channel: discord.abc.Messageable,
                       query: str, front: bool = False,
-                      tracks: Optional[list[Track]] = None) -> str:
-        """Shared by /play, /search, prefix commands and playlists."""
+                      tracks: Optional[list[Track]] = None, label: str = "") -> discord.Embed:
+        """Shared by /play, /search, prefix commands and playlists. Returns the reply embed."""
         await self.connect(member)
         player = await self.bot.get_player(member.guild)
         player.text_channel = channel
@@ -85,12 +86,7 @@ class Music(commands.Cog):
         added = player.add(tracks, front=front)
         if added == 0:
             raise UserError(f"คิวเต็ม (สูงสุด {config.MAX_QUEUE})")
-        if added == 1:
-            t = tracks[0]
-            starts = "กำลังจะเล่น" if not player.current and index == 0 else \
-                f"เล่น {relative_ts(player.eta(index))}"
-            return f"➕ **{t.title}** `[{t.fmt_duration()}]` · {starts}"
-        return f"➕ เพิ่ม {added} เพลงเข้าคิว"
+        return build_added_embed(player, tracks[:added], index, label)
 
     # ----------------------------------------------------------- commands
     async def play_autocomplete(self, inter: discord.Interaction, current: str):
@@ -128,8 +124,8 @@ class Music(commands.Cog):
     @app_commands.guild_only()
     async def play(self, inter: discord.Interaction, query: str, next: bool = False):
         await inter.response.defer(thinking=True)
-        msg = await self.enqueue(inter.user, inter.channel, query, front=next)
-        await inter.followup.send(msg)
+        await inter.followup.send(embed=await self.enqueue(inter.user, inter.channel, query,
+                                                           front=next))
 
     @app_commands.command(description="ค้นหาแล้วเลือกเพลงจากรายการ")
     @app_commands.guild_only()
@@ -142,10 +138,10 @@ class Music(commands.Cog):
         async def picked(i: discord.Interaction, track: Track):
             await i.response.defer()
             try:
-                msg = await self.enqueue(i.user, i.channel, track.url, tracks=[track])
+                embed = await self.enqueue(i.user, i.channel, track.url, tracks=[track])
+                await i.edit_original_response(content=None, embed=embed, view=None)
             except UserError as exc:
-                msg = str(exc)
-            await i.edit_original_response(content=msg, embed=None, view=None)
+                await i.edit_original_response(content=str(exc), embed=None, view=None)
 
         lines = [f"`{n}.` {t.title[:80]} `[{t.fmt_duration()}]`"
                  for n, t in enumerate(results, 1)]
@@ -202,9 +198,8 @@ class Music(commands.Cog):
         p = get_player(inter)
         if not p.current and not p.queue:
             raise UserError("คิวว่าง")
-        pages = build_queue_pages(p)
-        view = PagesView(pages, inter.user.id)
-        await inter.response.send_message(embed=pages[0], view=view)
+        view = QueueView(p, inter.user.id)
+        await inter.response.send_message(embed=view.pages[0], view=view)
         view.message = await inter.original_response()
 
     @app_commands.command(description="เพลงที่กำลังเล่น พร้อมปุ่มควบคุม")
@@ -218,6 +213,29 @@ class Music(commands.Cog):
         kw = {"file": card} if card else {}
         await inter.followup.send(embed=build_now_playing(p, card=card is not None),
                                   view=self.bot.panel_view, **kw)
+
+    @app_commands.command(description="เนื้อเพลงที่กำลังเล่น หรือค้นด้วยชื่อเพลง")
+    @app_commands.describe(query="ชื่อเพลง (เว้นว่าง = เพลงที่กำลังเล่น)")
+    @app_commands.guild_only()
+    async def lyrics(self, inter: discord.Interaction, query: Optional[str] = None):
+        await inter.response.defer(thinking=True)
+        msg = await self.lyrics_message(inter.guild_id, inter.user.id, query)
+        msg["view"].message = await inter.followup.send(**msg, wait=True)
+
+    async def lyrics_message(self, guild_id: int, user_id: int, query: Optional[str]) -> dict:
+        """Shared by /lyrics and the prefix command."""
+        p = self.bot.players.get(guild_id)
+        if query:
+            lyr, track = await lyrics.search(query), None
+        else:
+            if not p or not p.current:
+                raise UserError("ไม่มีเพลงเล่นอยู่ ใส่ชื่อเพลงเพื่อค้นหา")
+            track = p.current
+            lyr = await lyrics.find(track)
+        if not lyr:
+            raise UserError("หาเนื้อเพลงไม่เจอ")
+        view = LyricsView(lyr, user_id, p if track else None, track.url if track else "")
+        return {"embed": view.pages[0], "view": view}
 
     @app_commands.command(description="ปรับเสียง 0-150")
     @app_commands.guild_only()

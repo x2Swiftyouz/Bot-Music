@@ -10,7 +10,9 @@
 
 **การ์ด**: การ์ด Now Playing (รองรับภาษาไทย ใช้ฟอนต์ Kanit) แสดงชื่อศิลปิน ป้ายแหล่งเพลง เพลงถัดไป และ waveform ที่ขยับตามเพลง เลือกธีม (เบลอ/สีพื้น/มินิมอล) และรูปทรง (แนวนอน/จัตุรัสสำหรับมือถือ) ได้ด้วย `/settings card` มีการ์ดตอนกำลังโหลด การ์ดตอนเล่นไม่ได้ และการ์ดสรุปเมื่อจบเซสชัน ป้ายพิเศษ "ฮิต" สำหรับเพลงที่เปิดบ่อยในเซิร์ฟเวอร์ และป้ายวันเกิด (`/birthday set`) แชร์การ์ดเพลงที่ฟังอยู่ด้วย `/card` การ์ดส่งเป็น WebP และจะอัปโหลดใหม่เฉพาะเมื่อมีอะไรเปลี่ยน (หรือทุก `CARD_REFRESH` วินาที)
 
-**UI**: ปุ่มควบคุมที่เปลี่ยนตามสถานะ (ยังใช้ได้หลัง restart), dropdown ระดับเสียง, โหมด compact สำหรับมือถือ, แสดงเวลาที่เหลือได้, คิวแบบแบ่งหน้า, `/search` แบบ dropdown, `/help` แบบเลือกหมวด, สถานะห้องเสียงแสดงชื่อเพลง
+**เสียงและเนื้อเพลง**: ปรับความดังทุกเพลงให้เท่ากันด้วย FFmpeg loudnorm (เปิดเป็นค่าเริ่มต้น ปิดได้ด้วย `/settings normalize` หรือ `NORMALIZE=false`) เนื้อเพลงจาก lrclib.net ผ่าน `/lyrics` หรือปุ่ม 🎤 ถ้าเป็นแบบ synced มีปุ่ม 📍 ไปท่อนที่กำลังร้อง
+
+**UI**: panel มีปุ่ม ⏪ ⏩ กรอ 10 วินาที, หน้าคิวเลือกเพลงแล้วกด เล่นเลย / ขึ้นถัดไป / ลบ ได้ทันที, `/play` ตอบเป็น embed มีปก ลำดับในคิว และเวลาที่จะได้เล่น, ปุ่มควบคุมที่เปลี่ยนตามสถานะ (ยังใช้ได้หลัง restart), dropdown ระดับเสียง, โหมด compact สำหรับมือถือ, แสดงเวลาที่เหลือได้, คิวแบบแบ่งหน้า, `/search` แบบ dropdown, `/help` แบบเลือกหมวด, สถานะห้องเสียงแสดงชื่อเพลง
 
 **การจัดการ**: vote skip, จำกัดเพลงต่อคน, จำกัดความยาวเพลง, กันเพลงซ้ำ, cooldown, โหมด 24/7, undo คิว 5 ครั้งล่าสุด, audit log (`/log`), เพลย์ลิสต์ส่วนตัว (save/load/rename/import/add/removetrack) และจำกัดจำนวนเพลย์ลิสต์ต่อคน, คำสั่ง prefix (`!p`, `!s`, `!q` ฯลฯ)
 
@@ -51,9 +53,9 @@ python bot.py
 | เล่น | `/play` `/search` `/skip` `/previous` `/pause` `/resume` `/stop` `/seek` `/forward` `/backward` `/replay` `/volume` |
 | คิว | `/queue` `/nowplaying` `/remove` `/move` `/jump` `/shuffle` `/clear` `/undo` `/loop` |
 | เพลย์ลิสต์ | `/playlist save/load/list/show/delete/rename/import/add/removetrack` |
-| ข้อมูล | `/help` `/ping` `/about` `/log` |
+| ข้อมูล | `/help` `/ping` `/about` `/log` `/lyrics` |
 | การ์ด | `/card` `/birthday set/remove` |
-| แอดมิน | `/settings card/247/announce/voteskip/compact/timeformat/show` |
+| แอดมิน | `/settings card/normalize/247/announce/voteskip/compact/timeformat/show` |
 
 **Prefix**: ค่าเริ่มต้นคือ `!` เปลี่ยนได้ด้วย `PREFIX` ใน `.env` หรือ mention บอทแทน prefix ก็ได้ คำย่อที่ใช้บ่อย: `!p` เล่น, `!s` ข้าม, `!q` คิว, `!np` เพลงที่เล่นอยู่, `!v 80` เสียง, `!l` วนซ้ำ, `!ff 30` กรอ, `!h` ช่วยเหลือ
 

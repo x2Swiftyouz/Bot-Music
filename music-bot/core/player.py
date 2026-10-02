@@ -93,6 +93,7 @@ class GuildPlayer:
         self.time_remaining = bool(settings.get("time_remaining"))
         self.card_theme = settings.get("card_theme") or "blur"
         self.card_layout = settings.get("card_layout") or "wide"
+        self.normalize = bool(settings.get("normalize"))
         self._undo: deque[tuple[str, list[Track]]] = deque(maxlen=5)
         self._preload: Optional[tuple[Track, discord.AudioSource, str]] = None
         self._preload_task: Optional[asyncio.Task] = None
@@ -380,6 +381,8 @@ class GuildPlayer:
         else:
             before = FFMPEG_BEFORE + (f" -ss {start:.2f}" if start > 0 else "")
         chain = []
+        if self.normalize and config.NORMALIZE_FILTER:
+            chain.append(config.NORMALIZE_FILTER)
         if start == 0:
             chain.append("afade=t=in:st=0:d=1.5")
         if not OPUS_LOADED:
@@ -411,7 +414,16 @@ class GuildPlayer:
         return src
 
     def audio_signature(self) -> str:
-        return f"{OPUS_LOADED or self.volume}"
+        return f"{OPUS_LOADED or self.volume}|{self.normalize}"
+
+    def set_normalize(self, enabled: bool):
+        """Filters are baked into FFmpeg: restart the track in place to apply."""
+        if enabled == self.normalize:
+            return
+        self.normalize = enabled
+        self._drop_preload()
+        if self.current and self.current.duration:
+            self.restart_at(self.position)
 
     @staticmethod
     def close_source(source: discord.AudioSource):

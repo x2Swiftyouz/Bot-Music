@@ -48,6 +48,10 @@ SPOTIFY_CLIENT_SECRET = os.getenv("SPOTIFY_CLIENT_SECRET", "")
 
 # Smooth audio (needs libopus, auto-loaded from PyAV). 0 = instant.
 VOLUME_RAMP_MS = _int("VOLUME_RAMP_MS", 800)     # volume change ramp
+# Loudness normalization: every track plays at about the same loudness.
+# Default for servers that never ran /settings normalize.
+NORMALIZE = _bool("NORMALIZE", True)
+NORMALIZE_FILTER = os.getenv("NORMALIZE_FILTER", "loudnorm=I=-14:LRA=11:TP=-1.5")
 FADE_MS = _int("FADE_MS", 400)                   # fade on pause/skip/stop/seek
 
 # Playback stability

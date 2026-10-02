@@ -68,8 +68,9 @@ class Playlists(commands.Cog):
         tracks = [Track.from_dict(d) for d in data]
         if shuffle:
             random.shuffle(tracks)
-        msg = await self.music.enqueue(inter.user, inter.channel, name, tracks=tracks)
-        await inter.followup.send(f"📂 **{name}**: {msg}")
+        embed = await self.music.enqueue(inter.user, inter.channel, name, tracks=tracks,
+                                         label=f"📂 เพลย์ลิสต์ {name}")
+        await inter.followup.send(embed=embed)
 
     @playlist.command(description="รายการเพลย์ลิสต์ของฉัน")
     async def list(self, inter: discord.Interaction):
