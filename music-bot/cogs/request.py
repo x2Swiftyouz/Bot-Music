@@ -35,10 +35,10 @@ class RequestChannel(commands.Cog):
         query = msg.content.strip()
         if not query and msg.attachments:
             query = msg.attachments[0].url  # audio file upload
-        try:
-            await msg.delete()
-        except discord.HTTPException:
-            pass  # missing Manage Messages: the request still works
+        # Not at once: a message deleted within a moment of being sent can stay on the
+        # sender's screen (the Discord app sees the delete before its own send finished).
+        # delete(delay=…) runs in the background and ignores a missing Manage Messages.
+        await msg.delete(delay=config.REQUEST_DELETE_DELAY)
         if not query:
             return
         music = self.bot.get_cog("Music")

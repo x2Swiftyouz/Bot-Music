@@ -73,6 +73,7 @@ YTDLP_UPDATE_HOURS = _int("YTDLP_UPDATE_HOURS", 24)  # check for a new yt-dlp (0
 NIGHT_MODE = _bool("NIGHT_MODE", True)            # darker card late at night (TIMEZONE)
 NIGHT_HOURS = os.getenv("NIGHT_HOURS", "22-6")     # start-end hour, wraps past midnight
 STICKY_PANEL = _int("STICKY_PANEL", 10)           # re-post the panel below after N chat messages (0 = off)
+REQUEST_DELETE_DELAY = max(_int("REQUEST_DELETE_DELAY", 2), 1)  # request channel: seconds
 LYRICS_PREFETCH = _bool("LYRICS_PREFETCH", True)  # look lyrics up when a song starts (🎤 state)
 SESSION_SUMMARY = _bool("SESSION_SUMMARY", True)  # recap card when the session ends
 HOT_THRESHOLD = _int("HOT_THRESHOLD", 5)         # plays in a server for the "hit" badge
