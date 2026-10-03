@@ -5,6 +5,7 @@ import logging
 import sys
 import threading
 import time
+from collections import deque
 from typing import Callable, Optional
 
 import discord
@@ -99,6 +100,76 @@ def _scale(data: bytes, gain: float) -> bytes:
     return _scale_ramp(data, gain, gain)
 
 
+FRAME_BYTES = 3840  # 20 ms of 48 kHz s16le stereo
+PREBUFFER_FRAMES = 50  # read 1 s ahead
+
+
+class Prebuffer(discord.AudioSource):
+    """Reads its source up to PREBUFFER_FRAMES ahead in a thread. A new song's FFmpeg starts
+    decoding the moment it is created, so playback begins at once (no 0.5-1 s stall while
+    FFmpeg starts), and short network hiccups are ridden out from the buffer."""
+
+    def __init__(self, original: discord.AudioSource, frames: int = PREBUFFER_FRAMES):
+        self.original = original
+        self._buf: "deque[bytes]" = deque()
+        self._max = max(frames, 1)
+        self._cond = threading.Condition()
+        self._done = False
+        self._closed = False
+        self._thread = threading.Thread(target=self._fill, name="mb-prebuffer", daemon=True)
+        self._thread.start()
+
+    def _fill(self):
+        try:
+            while True:
+                with self._cond:
+                    while len(self._buf) >= self._max and not self._closed:
+                        self._cond.wait()
+                    if self._closed:
+                        return
+                data = self.original.read()  # FFmpeg pipe: outside the lock
+                with self._cond:
+                    if not data:
+                        return
+                    self._buf.append(data)
+                    self._cond.notify_all()
+        except Exception as exc:  # FFmpeg killed under us (cleanup) or a broken pipe
+            log.debug("prebuffer stopped: %r", exc)
+        finally:
+            with self._cond:
+                self._done = True
+                self._cond.notify_all()
+
+    def ready(self) -> bool:
+        """Audio is waiting (or the source has ended): read() will not block."""
+        with self._cond:
+            return bool(self._buf) or self._done
+
+    @property
+    def buffered(self) -> int:
+        return len(self._buf)
+
+    def read(self) -> bytes:
+        with self._cond:
+            while not self._buf and not self._done and not self._closed:
+                self._cond.wait(0.5)
+            if self._buf:
+                data = self._buf.popleft()
+                self._cond.notify_all()
+                return data
+            return b""
+
+    def is_opus(self) -> bool:
+        return False
+
+    def cleanup(self):
+        with self._cond:
+            self._closed = True
+            self._buf.clear()
+            self._cond.notify_all()
+        self.original.cleanup()
+
+
 class Silence(discord.AudioSource):
     """Placeholder left in a source whose audio was handed to the next song (crossfade)."""
 
@@ -137,6 +208,7 @@ class SmoothVolume(discord.AudioSource):
         self._step = 0.0
         self._on_done: Optional[Callable[[], None]] = None
         self.frames = 0  # read counter for the watchdog
+        self.lead_frames = 0  # quiet frames sent while FFmpeg was starting
         self._tail: Optional[list] = None  # [source, gain, step]: previous song fading out
 
     def crossfade_from(self, tail: discord.AudioSource, tail_gain: float, ms: int):
@@ -172,6 +244,11 @@ class SmoothVolume(discord.AudioSource):
         tail[1] = max(gain - step, 0.0)
         return _mix(data, _scale(old, (gain + tail[1]) / 2))
 
+    @property
+    def current_gain(self) -> float:
+        """The gain being applied right now (volume is where a fade is heading)."""
+        return self._gain
+
     # PCMVolumeTransformer compatible API
     @property
     def volume(self) -> float:
@@ -201,7 +278,14 @@ class SmoothVolume(discord.AudioSource):
         self.original.cleanup()
 
     def read(self) -> bytes:
-        data = self.original.read()
+        orig = self.original
+        if not self.frames and isinstance(orig, Prebuffer) and not orig.ready():
+            # FFmpeg is still starting: send quiet (the previous song keeps fading out over
+            # it) instead of making the sender wait. Not counted as a frame of this song.
+            self.lead_frames += 1
+            out = bytes(FRAME_BYTES)
+            return self._mix_tail(out) if self._tail else out
+        data = orig.read()
         if not data:
             return data
         self.frames += 1

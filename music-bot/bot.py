@@ -161,6 +161,7 @@ class MusicBot(commands.Bot):
                 await p.save_state()
             except Exception:
                 log.exception("save on shutdown failed")
+            p._drop_preload()  # stop its read-ahead thread and FFmpeg
         if self._health_runner:
             await self._health_runner.cleanup()
         await spotify.close()

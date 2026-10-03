@@ -19,7 +19,7 @@ import discord
 import config
 from core import clock, ratelimit
 from core.sources import Track, fmt_time, resolve_stream
-from core.audio import CountingSource, Silence, SmoothVolume
+from core.audio import CountingSource, Prebuffer, Silence, SmoothVolume
 from core.stream import HTTPStreamReader
 
 if TYPE_CHECKING:
@@ -139,6 +139,8 @@ EDIT_GAP_START = 5.0   # seconds between timer edits after the first 429
 EDIT_GAP_MAX = 20.0
 EDIT_GAP_DECAY = 120   # seconds without a 429 before edits speed up by 1 s
 STICKY_MIN_GAP = 20
+STOP_FADE_MS = 900  # ⏹ and leaving fade out at least this long
+SEEK_CROSSFADE_MS = 400  # a seek overlaps the song with itself: short, or it sounds doubled
 QUEUE_RECAP_MIN = 2  # songs in a queue run before "queue ended" shows a recap card
 ENDING_SECONDS = 10  # the card shows the next song this long before the end
 HOT_PART = 0.85  # heatmap level (of the peak) that counts as the hit part (= card.HOT_LEVEL)
@@ -218,7 +220,7 @@ class GuildPlayer:
         self.away_token = None   # empty room: see everyone_left / someone_back
         self.away_paused = False
         self.away_until = 0.0
-        self._tail = None        # (pcm source, gain, http reader): crossfade hand-over
+        self._tail = None        # (pcm source, gain, http reader, ms): crossfade hand-over
         self._last_edit = 0.0    # timer edits pace themselves (see _pace)
         self._edit_gap = 0.0
         self._gap_since = 0.0
@@ -384,11 +386,20 @@ class GuildPlayer:
         return src if isinstance(src, SmoothVolume) else None
 
     def _stop_current(self) -> bool:
-        """Stop the playing track, with a short fade-out when possible."""
+        """Stop the playing track. When something plays next (skip, previous, jump, seek),
+        the two overlap: this one fades out while the next fades in (SKIP_CROSSFADE_MS).
+        Otherwise a short fade-out."""
         vc = self.vc
         if not vc or not (vc.is_playing() or vc.is_paused()):
             return False
         src = self._smooth_source()
+        if (src and vc.is_playing() and config.SKIP_CROSSFADE_MS > 0 and not self._tail
+                and (self.queue or self._restart_at is not None)):
+            # a seek overlaps the same song with itself: keep that one short
+            ms = (min(config.SKIP_CROSSFADE_MS, SEEK_CROSSFADE_MS)
+                  if self._restart_at is not None else config.SKIP_CROSSFADE_MS)
+            self._hand_over(ms)
+            return True
         if src and vc.is_playing() and config.FADE_MS > 0:
             loop = self.bot.loop
 
@@ -724,7 +735,8 @@ class GuildPlayer:
                 raw = _PCMAudio(src_arg, executable=exe, pipe=pipe,
                                 before_options=before or None, options=opts)
                 # Seek restarts fade in; track starts use FFmpeg afade instead.
-                src = SmoothVolume(raw, volume=self.gain,
+                # read ahead in a thread: starts at once, rides out network hiccups
+                src = SmoothVolume(Prebuffer(raw), volume=self.gain,
                                    start_gain=0.0 if start > 0 else None)
                 if start > 0:
                     src.fade_to(self.gain, max(config.FADE_MS, 200))
@@ -846,9 +858,8 @@ class GuildPlayer:
 
         source = self._take_preload(track, start)
         if source is None:
-            if self._tail:
-                self._drop_tail(self._tail)
-                self._tail = None
+            # a waiting crossfade tail stays: the new source reads ahead (Prebuffer), so
+            # the old song keeps fading out while this one's FFmpeg starts
             try:
                 source = self.make_source(track, start)
             except Exception as exc:
@@ -1023,17 +1034,19 @@ class GuildPlayer:
                 return
             await asyncio.sleep(min(max(left - config.CROSSFADE_SECONDS, 0.05), 1.0))
 
-    def _hand_over(self):
+    def _hand_over(self, ms: Optional[int] = None):
         """End this song early, but keep its audio: the next song's source plays the rest
-        of it, fading out, while the next song fades in."""
+        of it, fading out over ms, while the next song fades in."""
         vc, src = self.vc, self._smooth_source()
         if not vc or not src or not vc.is_playing():
             return
+        ms = config.CROSSFADE_SECONDS * 1000 if ms is None else ms
         reader = getattr(src, "_mb_reader", None)
-        self._tail = (src.original, src.volume, reader)
+        # the level it is playing at right now (it may be fading in after a seek)
+        self._tail = (src.original, src.current_gain, reader, ms)
         src.original = Silence()   # stopping the old source must not kill its FFmpeg...
         src._mb_reader = None      # ...or close the stream feeding it
-        log.info("[%s] Crossfade: %ss", self.guild.id, config.CROSSFADE_SECONDS)
+        log.info("[%s] Crossfade: %.1fs", self.guild.id, ms / 1000)
         vc.stop()
 
     def _attach_tail(self, source) -> None:
@@ -1041,16 +1054,16 @@ class GuildPlayer:
         tail, self._tail = self._tail, None
         if not tail:
             return
-        pcm, gain, reader = tail
+        pcm, gain, reader, ms = tail
         if isinstance(source, SmoothVolume) and not source.crossfading:
-            source.crossfade_from(pcm, gain, config.CROSSFADE_SECONDS * 1000)
+            source.crossfade_from(pcm, gain, ms)
             source._mb_tail_reader = reader
             return
         self._drop_tail(tail)
 
     @staticmethod
     def _drop_tail(tail):
-        pcm, _, reader = tail
+        pcm, _, reader, _ = tail
         try:
             pcm.cleanup()
         except Exception:
@@ -1610,8 +1623,9 @@ class GuildPlayer:
             await self.send_summary()
         src = self._smooth_source()
         if src and self.vc.is_playing() and config.FADE_MS > 0:
-            src.fade_to(0, config.FADE_MS)
-            await asyncio.sleep(config.FADE_MS / 1000 + 0.1)
+            fade = max(config.FADE_MS, STOP_FADE_MS)  # ⏹ / leaving: a gentle ending
+            src.fade_to(0, fade)
+            await asyncio.sleep(fade / 1000 + 0.1)
         if self.vc:
             try:
                 await self.vc.disconnect(force=True)

@@ -91,6 +91,8 @@ FADE_MS = _int("FADE_MS", 400)                   # fade on pause/skip/stop/seek
 
 # Playback stability
 CROSSFADE_SECONDS = max(_int("CROSSFADE_SECONDS", 4), 0)  # songs overlap this long (0 = off)
+# skip / previous / jump: the old song fades out under the new one (ms, 0 = fade then gap)
+SKIP_CROSSFADE_MS = max(_int("SKIP_CROSSFADE_MS", 1500), 0)
 PRELOAD_SECONDS = _int("PRELOAD_SECONDS", 12)    # gapless: start next FFmpeg this early
 WATCHDOG_SECONDS = _int("WATCHDOG_SECONDS", 15)  # restart audio stuck this long
 
