@@ -64,9 +64,9 @@ OWNER_ID = _int("OWNER_ID", 0)
 PLAYLIST_LIMIT = _int("PLAYLIST_LIMIT", 10)       # playlists per user
 MUSIC_CARD = _bool("MUSIC_CARD", True)           # image card on now playing
 CARD_REFRESH = _int("CARD_REFRESH", 10)          # seconds between card re-uploads while playing
-# Moving equalizer on the card (animated WebP). Discord labels moving images "GIF", so by
-# default only the first card of a song moves: start | always | off
-CARD_ANIMATION = os.getenv("CARD_ANIMATION", "start" if _bool("CARD_ANIMATED", True) else "off")
+# Moving equalizer on the card (animated WebP): always | start (only a song's first card,
+# so Discord's "GIF" label goes away) | off
+CARD_ANIMATION = os.getenv("CARD_ANIMATION", "always" if _bool("CARD_ANIMATED", True) else "off")
 CARD_ANIMATION = CARD_ANIMATION.strip().lower()
 CARD_ANIMATION_SECONDS = 8  # "start": cards drawn in the first seconds of a song move
 YTDLP_UPDATE_HOURS = _int("YTDLP_UPDATE_HOURS", 24)  # check for a new yt-dlp (0 = off)
