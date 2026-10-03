@@ -139,8 +139,9 @@ EDIT_GAP_START = 5.0   # seconds between timer edits after the first 429
 EDIT_GAP_MAX = 20.0
 EDIT_GAP_DECAY = 120   # seconds without a 429 before edits speed up by 1 s
 STICKY_MIN_GAP = 20
+QUEUE_RECAP_MIN = 2  # songs in a queue run before "queue ended" shows a recap card
 ENDING_SECONDS = 10  # the card shows the next song this long before the end
-HOT_PART = 0.85  # heatmap level (of the peak) that counts as the hit part  # seconds: a busy chat must not make the panel jump down constantly  # the panel names people (status line), never pings
+HOT_PART = 0.85  # heatmap level (of the peak) that counts as the hit part (= card.HOT_LEVEL)
 
 
 def _media_urls(components) -> list[str]:
@@ -225,6 +226,9 @@ class GuildPlayer:
         self.track_plays = 0          # plays of the current track in this server (hit badge)
         self.requester_birthday = False
         self.session: list[dict] = []  # finished tracks, for the recap card
+        self._run_mark = 0       # session index where the current queue run started
+        self._recap_all = False  # the last queue-end recap covered the whole session
+        self._end_recap: list[dict] = []  # plays shown on the next "queue ended" panel
         self._panel_lock = asyncio.Lock()
         self.skip_votes: set[int] = set()
         self.destroyed = False
@@ -389,8 +393,7 @@ class GuildPlayer:
         if not self.current:
             return "ไม่มีเพลงเล่นอยู่"
         humans = self.humans_in_channel()
-        if (not self.vote_skip_enabled or self.is_admin(member)
-                or member.id == self.current.requester_id or len(humans) <= 2):
+        if self.can_skip_now(member):
             self.skip()
             return f"⏭ ข้าม **{self.current.name}**"
         self.skip_votes.add(member.id)
@@ -400,6 +403,12 @@ class GuildPlayer:
             self.skip()
             return f"⏭ โหวตครบ {need} เสียง ข้ามแล้ว"
         return f"🗳 โหวตข้าม {len(self.skip_votes)}/{need}"
+
+    def can_skip_now(self, member: discord.Member) -> bool:
+        """Skip without a vote: admins, the song's requester, or only two people here."""
+        return (not self.vote_skip_enabled or self.is_admin(member)
+                or bool(self.current and member.id == self.current.requester_id)
+                or len(self.humans_in_channel()) <= 2)
 
     def skip_need(self) -> int:
         """Votes needed to skip: half the people in the voice channel."""
@@ -758,6 +767,11 @@ class GuildPlayer:
                 self._tail = None
             self.current = None
             self.loading = False
+            start = min(self._run_mark, len(self.session))
+            if len(self.session) > start:  # this run of the queue, for the idle panel
+                self._end_recap = self.session[start:]
+                self._recap_all = start == 0
+                self._run_mark = len(self.session)
             await self._set_status(None)
             await self.update_panel()
             if self.stay_247:  # 24/7 never leaves, so recap when the queue runs out
@@ -1264,6 +1278,9 @@ class GuildPlayer:
 
     async def send_summary(self):
         plays, self.session = self.session, []
+        mark, self._run_mark = self._run_mark, 0
+        if self._recap_all and len(plays) <= mark:
+            return  # the "queue ended" panel already showed this whole session
         if not config.SESSION_SUMMARY or not plays or sum(p["seconds"] for p in plays) < 30:
             return
         data = None
@@ -1463,8 +1480,19 @@ class GuildPlayer:
                                                   view=RequestIdleView(), attachments=[])
                 else:
                     from core.ui import IdleView
-                    await self.panel_message.edit(embed=build_idle_embed(with_buttons=True),
-                                                  view=IdleView(self), attachments=[])
+                    recap, self._end_recap = self._end_recap, []
+                    embed = build_idle_embed(with_buttons=True, recap=recap)
+                    files = []
+                    if len(recap) >= QUEUE_RECAP_MIN and config.MUSIC_CARD:
+                        from core.card import make_summary, new_filename
+                        data = await make_summary(recap, label="จบคิวแล้ว · QUEUE RECAP")
+                        if data:
+                            name = new_filename("queue-end")
+                            embed.set_image(url=f"attachment://{name}")
+                            files = [discord.File(io.BytesIO(data), filename=name,
+                                                  description=f"สรุปคิว {len(recap)} เพลง")]
+                    await self.panel_message.edit(embed=embed, view=IdleView(self),
+                                                  attachments=files, allowed_mentions=NO_PINGS)
                     if self.auto_clean:  # "queue ended" goes away by itself
                         await self.panel_message.delete(delay=config.AUTO_CLEAN_SECONDS)
                 self.panel_message = None

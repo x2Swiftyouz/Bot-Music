@@ -232,11 +232,28 @@ class RequestIdleView(discord.ui.View):
         await act_add(inter)
 
 
-def build_idle_embed(with_buttons: bool = False) -> discord.Embed:
+def recap_line(plays: list[dict]) -> str:
+    """'🎵 เล่นไป 5 เพลง · ⏱ 18 นาที · 👑 ขาประจำ @name (3 เพลง)' for this queue run."""
+    from collections import Counter
+    from core.card import _fmt_long
+    seconds = int(sum(p["seconds"] for p in plays))
+    parts = [f"🎵 เล่นไป **{len(plays)}** เพลง", f"⏱ {_fmt_long(seconds)}"]
+    people = Counter(p["requester_id"] for p in plays if p.get("requester_id"))
+    if len(people) > 1 or (people and len(plays) > 1):
+        uid, n = people.most_common(1)[0]
+        parts.append(f"👑 ขาประจำ <@{uid}> ({n} เพลง)")
+    return " · ".join(parts)
+
+
+def build_idle_embed(with_buttons: bool = False, recap: Optional[list[dict]] = None
+                     ) -> discord.Embed:
+    """recap: the songs this queue run played (shown above the buttons)."""
     e = discord.Embed(color=SOURCE_COLORS["other"])
     e.title = "⏹ จบคิวแล้ว"
     e.description = ("เล่นซ้ำเพลงล่าสุด เปิด 📻 Autoplay หรือเพิ่มเพลงใหม่ได้จากปุ่มด้านล่าง"
                      if with_buttons else "ใช้ `/play` เพื่อเล่นต่อ")
+    if recap:
+        e.description = f"{recap_line(recap)}\n-# {e.description}"
     return e
 
 
@@ -413,7 +430,7 @@ class PagesView(discord.ui.View):
 
 class QueueView(PagesView):
     """Queue pages plus a multi-select picker: play now, move up, remove,
-    search inside the queue, remove all of my songs, remove duplicates."""
+    search inside the queue, a menu of my own songs to remove, remove duplicates."""
 
     PER_PAGE = QUEUE_PER_PAGE
 
@@ -424,8 +441,14 @@ class QueueView(PagesView):
         self.picker = discord.ui.Select(placeholder="เลือกเพลง (เลือกได้หลายเพลง)", row=1,
                                         options=[discord.SelectOption(label="-")])
         self.picker.callback = self._picked
+        # one step for the most common wish: take my own song(s) out, on any page
+        self.mine_picker = discord.ui.Select(placeholder="🗑 ลบเพลงที่ฉันขอ", row=3,
+                                             options=[discord.SelectOption(label="-")])
+        self.mine_picker.callback = self._remove_mine
+        self._mine: list[Track] = []
         super().__init__(build_queue_pages(p, self.PER_PAGE), author_id)
         self.add_item(self.picker)
+        self.add_item(self.mine_picker)
         self._sync()
 
     def _sync(self):
@@ -461,8 +484,47 @@ class QueueView(PagesView):
         self.remove_btn.label = f"ลบ {n}" if n > 1 else None
         self.search_btn.label = "ล้างการค้นหา" if self.query else "ค้นหา"
         self.search_btn.emoji = "✖️" if self.query else "🔍"
-        self.mine_btn.disabled = self.dedupe_btn.disabled = not self.p.queue
+        self.dedupe_btn.disabled = not self.p.queue
         self.image_btn.disabled = not queue_items(self.p, self.query)
+        self._sync_mine()
+
+    MINE_MAX = 25  # options a menu can hold
+
+    def _sync_mine(self):
+        if not hasattr(self, "mine_picker"):
+            return
+        mine = [(i, t) for i, t in enumerate(self.p.queue, 1)
+                if t.requester_id == self.author_id][:self.MINE_MAX]
+        self._mine = [t for _, t in mine]
+        menu = self.mine_picker
+        if mine:
+            menu.options = [discord.SelectOption(
+                label=f"{i}. {t.name}"[:100], value=str(n), emoji="🗑",
+                description=f"{t.fmt_duration()} · ลำดับที่ {i}"[:100])
+                for n, (i, t) in enumerate(mine)]
+            menu.max_values = len(mine)
+            menu.placeholder = f"🗑 ลบเพลงที่ฉันขอ ({len(mine)} เพลง) เลือกแล้วลบทันที"
+            menu.disabled = False
+        else:
+            menu.options = [discord.SelectOption(label="ไม่มีเพลงของคุณ", value="-")]
+            menu.max_values = 1
+            menu.placeholder = "🗑 คุณไม่มีเพลงในคิว"
+            menu.disabled = True
+
+    async def _remove_mine(self, inter: discord.Interaction):
+        picked = [self._mine[int(v)] for v in self.mine_picker.values
+                  if v.isdigit() and int(v) < len(self._mine)]
+
+        def run(p):
+            ids = {id(t) for t in p.queue}
+            alive = [t for t in picked if id(t) in ids and t.requester_id == inter.user.id]
+            if not alive:
+                raise UserError("เพลงที่เลือกไม่อยู่ในคิวแล้ว")
+            p.remove_tracks(alive)
+            if len(alive) == 1:
+                return f"🗑 ลบ **{alive[0].name}** แล้ว (ใช้ /undo เพื่อย้อน)"
+            return f"🗑 ลบเพลงของคุณ {len(alive)} เพลงแล้ว (ใช้ /undo เพื่อย้อน)"
+        await self._apply(inter, "remove mine (menu)", run)
 
     def _refresh(self):
         self.pages = build_queue_pages(self.p, self.PER_PAGE, self.query)
@@ -556,11 +618,11 @@ class QueueView(PagesView):
         await audit_inter(inter, "move up" if step < 0 else "move down", text[:150])
         await p.update_panel()
 
-    @discord.ui.button(emoji="🔼", label="เลื่อนขึ้น", style=discord.ButtonStyle.secondary, row=3)
+    @discord.ui.button(emoji="🔼", label="เลื่อนขึ้น", style=discord.ButtonStyle.secondary, row=2)
     async def up_btn(self, inter: discord.Interaction, _):
         await self._nudge(inter, -1)
 
-    @discord.ui.button(emoji="🔽", label="เลื่อนลง", style=discord.ButtonStyle.secondary, row=3)
+    @discord.ui.button(emoji="🔽", label="เลื่อนลง", style=discord.ButtonStyle.secondary, row=2)
     async def down_btn(self, inter: discord.Interaction, _):
         await self._nudge(inter, 1)
 
@@ -571,16 +633,6 @@ class QueueView(PagesView):
             self._refresh()
             return await inter.response.edit_message(embed=self.pages[0], view=self)
         await inter.response.send_modal(QueueSearchModal(self))
-
-    @discord.ui.button(emoji="🧹", label="ลบเพลงของฉัน", style=discord.ButtonStyle.secondary,
-                       row=2)
-    async def mine_btn(self, inter: discord.Interaction, _):
-        def run(p):
-            n = p.remove_tracks([t for t in p.queue if t.requester_id == inter.user.id])
-            if not n:
-                raise UserError("คุณไม่มีเพลงในคิว")
-            return f"🧹 ลบเพลงของคุณ {n} เพลง (ใช้ /undo เพื่อย้อน)"
-        await self._apply(inter, "remove mine", run)
 
     @discord.ui.button(emoji="♻️", label="ลบเพลงซ้ำ", style=discord.ButtonStyle.secondary, row=2)
     async def dedupe_btn(self, inter: discord.Interaction, _):
@@ -638,27 +690,48 @@ class QueueSearchModal(discord.ui.Modal, title="ค้นหาในคิว")
         await inter.response.edit_message(embed=v.pages[0], view=v)
 
 
+ADD_MODES = (("end", "ต่อท้ายคิว", "➕", "รอคิวตามปกติ"),
+             ("next", "เป็นเพลงถัดไป", "⏭", "เล่นต่อจากเพลงนี้"),
+             ("now", "เล่นทันที", "▶️", "ข้ามเพลงที่เล่นอยู่ (ถ้าคุณข้ามได้)"))
+
+
 class AddSongModal(discord.ui.Modal, title="เพิ่มเพลง"):
     query = discord.ui.TextInput(label="ชื่อเพลง หรือลิงก์",
                                  placeholder="เช่น ลมหายใจ bodyslam หรือลิงก์ YouTube / Spotify",
                                  max_length=300)
-    next_up = discord.ui.TextInput(label="ให้เป็นเพลงถัดไป? (พิมพ์ y)", required=False,
-                                   max_length=3, placeholder="เว้นว่าง = ต่อท้ายคิว")
+    how = discord.ui.Label(text="เพิ่มแบบไหน", component=discord.ui.Select(
+        options=[discord.SelectOption(label=label, value=value, emoji=emoji, description=desc,
+                                      default=value == "end")
+                 for value, label, emoji, desc in ADD_MODES]))
 
     async def on_submit(self, inter: discord.Interaction):
         music = inter.client.get_cog("Music")
-        front = str(self.next_up.value).strip().lower() in ("y", "yes", "ใช่", "1")
+        mode = (self.how.component.values or ["end"])[0]
         try:
             music.check_cooldown(inter.user.id)
             await inter.response.defer(ephemeral=True, thinking=True)
             embed = await music.enqueue(inter.user, inter.channel, str(self.query.value),
-                                        front=front)
+                                        front=mode in ("next", "now"))
         except UserError as exc:
             if inter.response.is_done():
                 return await inter.followup.send(f"⚠️ {exc}", ephemeral=True)
             return await inter.response.send_message(f"⚠️ {exc}", ephemeral=True)
-        await inter.followup.send(embed=embed, ephemeral=True)
-        await audit_inter(inter, "play (panel)", str(self.query.value))
+        extra = play_now(inter) if mode == "now" else ""
+        await inter.followup.send(content=extra or None, embed=embed, ephemeral=True)
+        await audit_inter(inter, f"play (panel, {mode})", str(self.query.value))
+
+
+def play_now(inter: discord.Interaction) -> str:
+    """'เล่นทันที': the song was put first in the queue; skip what is playing if this
+    person may (else it simply plays next). Returns a note for them, or ""."""
+    p = inter.client.players.get(inter.guild_id)
+    if not p or not p.current or not p.queue or p.queue[0].requester_id != inter.user.id:
+        return ""
+    if not p.can_skip_now(inter.user):
+        return "ℹ️ เพลงที่เล่นอยู่เป็นของคนอื่น เลยใส่เป็นเพลงถัดไปแทน (กด ⏭ เพื่อโหวตข้าม)"
+    p.note(f"▶️ {who_label(inter.user)} เล่น {p.queue[0].name[:40]} ทันที")
+    p.skip()
+    return ""
 
 
 def build_lyrics_pages(lyr: Lyrics, max_chars: int = 1800) -> list[discord.Embed]:
@@ -919,7 +992,9 @@ async def act_lyrics(inter):
     await inter.response.defer(ephemeral=True, thinking=True)
     lyr = await lyrics.find(track)
     if not lyr:
-        return await inter.followup.send("หาเนื้อเพลงไม่เจอ ลอง `/lyrics ชื่อเพลง`", ephemeral=True)
+        return await inter.followup.send(
+            f"🎤 หาเนื้อเพลง **{_plain(track.name, 80)}** ไม่เจอในฐานข้อมูลเนื้อเพลง"
+            " (เพลงรีมิกซ์หรือเพลงใหม่มักยังไม่มี) ลอง `/lyrics ชื่อเพลง ศิลปิน`", ephemeral=True)
     view = LyricsView(lyr, inter.user.id, p, track.url)
     await inter.followup.send(embed=view.pages[0], view=view, ephemeral=True)
 
@@ -928,12 +1003,25 @@ async def act_add(inter):
     await inter.response.send_modal(AddSongModal())
 
 
+LYRICS_MISSING = {
+    "none": "🎙 เพลงนี้หาเนื้อเพลงไม่เจอ เลยเปิดเนื้อสดไม่ได้ ลอง `/lyrics ชื่อเพลง` ดูนะ",
+    "plain": "🎙 เพลงนี้มีแต่เนื้อเพลงธรรมดา ไม่มีเวลากำกับแต่ละบรรทัด เลยเปิดเนื้อสดไม่ได้"
+             " กด 🎤 เพื่ออ่านเนื้อเต็มได้",
+}
+
+
 async def act_live_lyrics(inter):
     def run(p: "GuildPlayer") -> str:
+        state = p.lyrics_state() if hasattr(p, "lyrics_state") else "unknown"
+        if not p.live_lyrics and state in LYRICS_MISSING:
+            return LYRICS_MISSING[state]
         on = p.toggle_live_lyrics()
         return "🎙 เปิดเนื้อเพลงสดบน panel" if on else "ปิดเนื้อเพลงสดแล้ว"
-    await _act(inter, run, "live lyrics",
-               note=lambda p, _: "🎙 {who} เปิดเนื้อสด" if p.live_lyrics else "🎙 {who} ปิดเนื้อสด")
+    def note(p, msg):
+        if msg in LYRICS_MISSING.values():
+            return None
+        return "🎙 {who} เปิดเนื้อสด" if p.live_lyrics else "🎙 {who} ปิดเนื้อสด"
+    await _act(inter, run, "live lyrics", note=note)
 
 
 HOT_LEAD = 3  # seconds before the most replayed point, so the hit part starts cleanly
@@ -1044,12 +1132,12 @@ def _seek_state(view, p: "GuildPlayer"):
 
 
 def _lyrics_state(view, p: "GuildPlayer"):
-    """🎤 grey when the song has no lyrics; 🎙 needs time-synced lyrics.
+    """🎤 and 🎙 stay pressable without lyrics: pressing says why (see LYRICS_MISSING).
     Green 🎙 = synced lyrics are ready to follow along; blue = live lyrics on."""
     state = p.lyrics_state() if hasattr(p, "lyrics_state") else "unknown"
-    view.lyrics_btn.disabled = not p.current or state == "none"
+    view.lyrics_btn.disabled = not p.current
     live = view.live_lyrics_btn
-    live.disabled = not p.current or (state in ("none", "plain") and not p.live_lyrics)
+    live.disabled = not p.current
     if p.live_lyrics:
         live.style = discord.ButtonStyle.primary
     elif state == "synced":

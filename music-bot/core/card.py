@@ -73,6 +73,202 @@ def font(weight: str, size: int) -> ImageFont.FreeTypeFont:
     return _font_cache[key]
 
 
+# ------------------------------------------------------------ other scripts
+# Kanit has Thai and Latin only. Other letters fall back, one by one, to Noto fonts: Lao,
+# Khmer and Myanmar ship in assets/fonts. Chinese, Japanese and Korean fonts are big (4-9 MB
+# each), so they are downloaded once into data/fonts the first time a title needs them.
+FALLBACK_FONTS = ("NotoSansLao", "NotoSansKhmer", "NotoSansMyanmar")
+CJK_DIR = os.path.join(os.path.dirname(config.DB_PATH) or ".", "fonts")
+CJK_URL = ("https://raw.githubusercontent.com/notofonts/noto-cjk/main/Sans/SubsetOTF/"
+           "{region}/NotoSans{region}-{weight}.otf")
+CJK_REGIONS = ("JP", "KR", "SC")
+_JOINERS = "\u200c\u200d\ufe0e\ufe0f"
+
+
+def _cjk_path(region: str, weight: str) -> str:
+    # Medium text uses Regular: one weight less to download
+    return os.path.join(CJK_DIR, f"NotoSans{region}-{'Bold' if weight == 'Bold' else 'Regular'}.otf")
+
+
+def cjk_regions(text: str) -> list[str]:
+    """CJK fonts this text needs, best first: kana = JP, hangul = KR, other Han = SC."""
+    kana = hangul = han = punct = False
+    for ch in text:
+        o = ord(ch)
+        if 0x3040 <= o <= 0x30FF or 0x31F0 <= o <= 0x31FF:
+            kana = True
+        elif 0xAC00 <= o <= 0xD7AF or 0x1100 <= o <= 0x11FF or 0x3130 <= o <= 0x318F:
+            hangul = True
+        elif 0x4E00 <= o <= 0x9FFF or 0x3400 <= o <= 0x4DBF:
+            han = True
+        elif 0x3000 <= o <= 0x303F or 0xFF00 <= o <= 0xFFEF:
+            punct = True  # 【】「」 and full-width letters
+    out = []
+    if kana or (punct and not han and not hangul):
+        out.append("JP")
+    if hangul:
+        out.append("KR")
+    if han and not kana:
+        out.append("SC")
+    return out
+
+
+def _simple(text: str) -> bool:
+    """Only ASCII, Latin-1 and Thai: Kanit has all of it."""
+    return all(c < "\u0250" or "\u0e00" <= c <= "\u0e7f" for c in text)
+
+
+_probes: dict[str, tuple] = {}
+_has: dict[tuple[str, str], bool] = {}
+
+
+def _covers(path: str, ch: str) -> bool:
+    """Does this font have a glyph for ch? (A missing one draws the same box as U+FFFF.)"""
+    key = (path, ch)
+    found = _has.get(key)
+    if found is None:
+        if path not in _probes:
+            probe = ImageFont.truetype(path, 20, layout_engine=LAYOUT)
+            box = probe.getmask("\uffff")
+            _probes[path] = (probe, (box.size, bytes(box)))
+        probe, box = _probes[path]
+        mask = probe.getmask(ch)
+        found = _has[key] = (mask.size, bytes(mask)) != box
+    return found
+
+
+_fallback_cache: dict[tuple[str, int], ImageFont.FreeTypeFont] = {}
+
+
+def _fallback_font(path: str, size: int) -> ImageFont.FreeTypeFont:
+    key = (path, size)
+    if key not in _fallback_cache:
+        _fallback_cache[key] = ImageFont.truetype(path, size, layout_engine=LAYOUT)
+    return _fallback_cache[key]
+
+
+def _chain(weight: str, text: str) -> list[str]:
+    paths = [os.path.join(FONT_DIR, f"{name}-{weight}.ttf") for name in FALLBACK_FONTS]
+    prefer = cjk_regions(text)
+    paths += [_cjk_path(r, weight) for r in prefer + [r for r in CJK_REGIONS if r not in prefer]]
+    return [p for p in paths if os.path.exists(p)]
+
+
+def _runs(text: str, fnt) -> Optional[list[tuple[str, ImageFont.FreeTypeFont]]]:
+    """Split text into (part, font) runs when Kanit lacks some of its letters; None when
+    Kanit draws all of it. Symbols no font has (emoji) are left out rather than drawn
+    as boxes; letters no font has yet stay (their font may still be downloading)."""
+    if not text or _simple(text):
+        return None
+    path = getattr(fnt, "path", None)
+    name = os.path.basename(path or "")
+    if not name.startswith("Kanit-"):
+        return None
+    if all(_covers(path, c) for c in set(text) if c not in _JOINERS):
+        return None
+    chain = [path] + _chain(name[6:-4], text)
+    runs: list[list] = []
+    for ch in text:
+        cat = unicodedata.category(ch)
+        cur = runs[-1][1] if runs else None
+        if cur and (cat in ("Mn", "Mc", "Me") or ch in _JOINERS):
+            runs[-1][0] += ch  # marks stay with their letter
+            continue
+        if cur and cat[0] in "ZPSN" and _covers(cur, ch):
+            runs[-1][0] += ch  # spaces and punctuation do not switch fonts
+            continue
+        use = next((p for p in chain if _covers(p, ch)), None)
+        if use is None:
+            if cat[0] == "S" or ch in _JOINERS:
+                continue  # emoji and symbols nobody has: leave out
+            use = path
+        if cur == use:
+            runs[-1][0] += ch
+        else:
+            runs.append([ch, use])
+    return [(t, fnt if p == path else _fallback_font(p, fnt.size)) for t, p in runs]
+
+
+class _TextDraw(ImageDraw.ImageDraw):
+    """ImageDraw that draws letters Kanit lacks with a fallback font (see _runs)."""
+
+    def textlength(self, text, font=None, *args, **kwargs):
+        runs = _runs(text, font) if isinstance(text, str) else None
+        if runs is None:
+            return super().textlength(text, font, *args, **kwargs)
+        return sum(super(_TextDraw, self).textlength(t, f, *args, **kwargs) for t, f in runs)
+
+    def text(self, xy, text, fill=None, font=None, anchor=None, *args, **kwargs):
+        runs = _runs(text, font) if isinstance(text, str) else None
+        if runs is None:
+            return super().text(xy, text, fill, font, anchor, *args, **kwargs)
+        anchor = anchor or "la"
+        widths = [super(_TextDraw, self).textlength(t, f) for t, f in runs]
+        total = sum(widths)
+        x = xy[0] - {"m": total / 2, "r": total}.get(anchor[0], 0)
+        ascent, descent = font.getmetrics()  # all runs share Kanit's baseline
+        y = xy[1] + {"m": (ascent - descent) / 2, "s": 0, "d": -descent}.get(anchor[1], ascent)
+        for (part, f), w in zip(runs, widths):
+            super().text((x, y), part, fill, f, "ls", *args, **kwargs)
+            x += w
+
+
+def _Draw(im: Image.Image, mode=None) -> _TextDraw:
+    return _TextDraw(im, mode)
+
+
+def _font_files() -> tuple:
+    """Downloaded fonts so far: cached card parts are redrawn once a font arrives."""
+    try:
+        return tuple(sorted(os.listdir(CJK_DIR)))
+    except OSError:
+        return ()
+
+
+_downloads: dict[str, "asyncio.Future"] = {}
+FONT_WAIT = 15  # seconds a card waits for a font download (it goes on in the background)
+
+
+async def _download_font(url: str, path: str):
+    os.makedirs(CJK_DIR, exist_ok=True)
+    tmp = path + ".part"
+    timeout = aiohttp.ClientTimeout(total=180)
+    async with aiohttp.ClientSession(timeout=timeout) as session:
+        async with session.get(url) as r:
+            r.raise_for_status()
+            with open(tmp, "wb") as fh:
+                async for chunk in r.content.iter_chunked(1 << 16):
+                    fh.write(chunk)
+    os.replace(tmp, path)  # the card process never sees half a file
+    log.info("Downloaded font %s (%d KB)", os.path.basename(path), os.path.getsize(path) // 1024)
+
+
+async def ensure_fonts(*texts: str):
+    """Download the CJK fonts these texts need (once). Waits up to FONT_WAIT seconds."""
+    if not config.CARD_FONT_DOWNLOAD:
+        return
+    jobs = []
+    for region in cjk_regions(" ".join(t for t in texts if t)):
+        for weight in ("Regular", "Bold"):
+            path = _cjk_path(region, weight)
+            if os.path.exists(path):
+                continue
+            job = _downloads.get(path)
+            if job is None:
+                url = CJK_URL.format(region=region, weight=weight)
+                job = _downloads[path] = asyncio.ensure_future(_download_font(url, path))
+
+                def done(f, path=path):
+                    if f.cancelled() or f.exception():
+                        log.warning("font download failed (%s): %s", os.path.basename(path),
+                                    "cancelled" if f.cancelled() else f.exception())
+                        _downloads.pop(path, None)  # try again next time
+                job.add_done_callback(done)
+            jobs.append(job)
+    if jobs:
+        await asyncio.wait([asyncio.shield(j) for j in jobs], timeout=FONT_WAIT)
+
+
 # ------------------------------------------------------------------ layout
 @dataclass(frozen=True)
 class Geo:
@@ -199,18 +395,69 @@ def _fit_title(draw, text: str, size: int, max_w: float, lines: int = 2, size2: 
     return fnt, wrapped
 
 
+_NAME_STOP = {"official", "music", "video", "audio", "lyric", "lyrics", "remix", "cover",
+              "live", "the", "and", "feat", "version", "mv", "ost", "channel", "records",
+              "entertainment", "topic"}
+
+
+def _name_tokens(text: str) -> set[str]:
+    """Words of a name for matching: case, tone marks and punctuation ignored."""
+    text = "".join(c for c in unicodedata.normalize("NFC", text.casefold())
+                   if unicodedata.category(c) != "Mn")
+    words = re.split(r"[\s\-–—|/\\,.&+()\[\]{}:;!?'\"“”‘’「」【】]+", text)
+    return {w for w in words if len(w) >= 3 and w not in _NAME_STOP}
+
+
+def _same_artist(part: str, artist: str) -> bool:
+    """'จิมมี้ สิทธิพล ຈິມມີ້ ສິດທິພົນ' names 'JIMMY SITTHIPHON - จิมมี่ สิทธิพล'."""
+    if not part or not artist:
+        return False
+    if artist.casefold() in part.casefold():
+        return True
+    return bool(_name_tokens(part) & _name_tokens(artist))
+
+
+def _is_lao(word: str) -> bool:
+    return any("\u0e80" <= c <= "\u0eff" for c in word)
+
+
+def _one_script(text: str) -> str:
+    """'ໃສວ່າຊັງເຂົາ ไสว่าซังเขา' (the same name in Lao and Thai): keep the Thai."""
+    if not any("\u0e00" <= c <= "\u0e7f" for c in text) or not _is_lao(text):
+        return text
+    kept = " ".join(w for w in text.split() if not _is_lao(w))
+    return re.sub(r"^[\s\-–—|/]+|[\s\-–—|/]+$", "", kept) or text
+
+
+def _artist_name(artist: str) -> str:
+    """'JIMMY SITTHIPHON - จิมมี่ สิทธิพล' (one name, two scripts): keep the Thai one."""
+    for sep in (" - ", " – ", " | "):
+        parts = [x.strip() for x in artist.split(sep)]
+        if len(parts) == 2 and all(parts):
+            thai = [x for x in parts if any("\u0e00" <= c <= "\u0e7f" for c in x)]
+            latin = [x for x in parts if x.isascii()]
+            if len(thai) == 1 and len(latin) == 1:
+                return thai[0]
+    return _one_script(artist)
+
+
 def _title_parts(track: Track) -> tuple[str, str, str]:
     """(song, artists, featured) for the card: 'HK & GH - Lost or Love FT. A & B' with
-    channel 'HK' -> ('Lost or Love', 'HK & GH', 'A & B')."""
+    channel 'HK' -> ('Lost or Love', 'HK & GH', 'A & B'). 'Song - Artist' works too."""
     title, feat = split_feat(track.name)
     artist = (track.artist or "").strip()
     for sep in (" - ", " – ", " — "):
         left, found, right = title.partition(sep)
-        if found and right.strip() and artist and (
-                left.lower().startswith(artist.lower()) or artist.lower() in left.lower()):
-            left, left_feat = split_feat(left.strip())
-            return right.strip(), left, feat or left_feat
-    return title, artist, feat
+        left, right = left.strip(), right.strip()
+        if not (found and left and right and artist):
+            continue
+        if left.lower().startswith(artist.lower()) or _same_artist(left, artist):
+            left, left_feat = split_feat(left)
+            return _one_script(right), _artist_name(left), feat or left_feat
+        if _same_artist(right, artist):  # 'Song - Artist': the channel names the artist
+            right, right_feat = split_feat(right)
+            return _one_script(left), _artist_name(artist), feat or right_feat
+    return _one_script(title), _artist_name(artist), feat
 
 
 def display_title(track: Track) -> str:
@@ -315,7 +562,7 @@ def _gradient(size, c1, c2, a1: int, a2: int) -> Image.Image:
 # ------------------------------------------------------------------- shapes
 def _rounded(img: Image.Image, radius: int) -> Image.Image:
     mask = Image.new("L", img.size, 0)
-    ImageDraw.Draw(mask).rounded_rectangle((0, 0, *img.size), radius=radius, fill=255)
+    _Draw(mask).rounded_rectangle((0, 0, *img.size), radius=radius, fill=255)
     img = img.convert("RGBA")
     img.putalpha(mask)
     return img
@@ -374,10 +621,98 @@ def _icon(d: ImageDraw.ImageDraw, kind: str, x: float, cy: float, color, muted=F
         d.arc(box(0, -8, 16, 8), -60, 60, fill=color, width=w2)
     elif kind == "chapter":  # a bookmark
         d.polygon([P(2, -8), P(13, -8), P(13, 8), P(7.5, 3.5), P(2, 8)], fill=color)
+    elif kind.startswith("flag:"):
+        _flag(d, kind[5:], box(0, -6, 17, 6), k)
     elif kind == "cake":
         d.rounded_rectangle(box(0, 0, 16, 7), 2, fill=color)
         d.rectangle(box(7, -6, 9, 0), fill=color)
         d.ellipse(box(6, -10, 10, -6), fill=color)
+
+
+# Song language from the letters in its title: (code, name). Thai songs often carry Lao or
+# Korean words, so another script wins when it has a few letters of its own.
+LANGUAGES = {"la": "ลาว", "kr": "เกาหลี", "jp": "ญี่ปุ่น", "cn": "จีน", "kh": "กัมพูชา",
+             "mm": "พม่า", "vn": "เวียดนาม", "th": "ไทย"}
+_VIET = set("ăâđêôơưĂÂĐÊÔƠƯ")
+
+
+def song_language(text: str) -> Optional[str]:
+    counts = Counter()
+    for ch in text:
+        o = ord(ch)
+        if 0x0E80 <= o <= 0x0EFF:
+            counts["la"] += 1
+        elif 0xAC00 <= o <= 0xD7AF or 0x1100 <= o <= 0x11FF:
+            counts["kr"] += 1
+        elif 0x3040 <= o <= 0x30FF:
+            counts["jp"] += 1
+        elif 0x4E00 <= o <= 0x9FFF:
+            counts["cn"] += 1
+        elif 0x1780 <= o <= 0x17FF:
+            counts["kh"] += 1
+        elif 0x1000 <= o <= 0x109F:
+            counts["mm"] += 1
+        elif 0x0E00 <= o <= 0x0E7F:
+            counts["th"] += 1
+        elif ch in _VIET or 0x1EA0 <= o <= 0x1EFF:
+            counts["vn"] += 1
+    if counts["jp"] and counts["cn"]:  # kanji with kana: Japanese
+        counts["jp"] += counts.pop("cn")
+    other = [(n, c) for c, n in counts.items() if c != "th" and n >= 2]
+    if other:
+        return max(other)[1]
+    return "th" if counts["th"] else None
+
+
+def _star(d, cx, cy, r, color):
+    pts = []
+    for i in range(10):
+        a = -math.pi / 2 + i * math.pi / 5
+        rr = r if i % 2 == 0 else r * 0.42
+        pts.append((cx + rr * math.cos(a), cy + rr * math.sin(a)))
+    d.polygon(pts, fill=color)
+
+
+def _flag(d, code: str, box, k: float):
+    """A tiny flag drawn with shapes (the card font has no flag emoji)."""
+    x0, y0, x1, y1 = box
+    w, h = x1 - x0, y1 - y0
+
+    def bands(*colors, weights=None):
+        weights = weights or [1] * len(colors)
+        y, unit = y0, h / sum(weights)
+        for c, wt in zip(colors, weights):
+            d.rectangle((x0, y, x1, y + unit * wt), fill=c)
+            y += unit * wt
+    if code == "th":
+        bands((165, 25, 49), WHITE, (45, 42, 74), WHITE, (165, 25, 49), weights=[1, 1, 2, 1, 1])
+    elif code == "la":
+        bands((206, 17, 38), (0, 40, 104), (206, 17, 38), weights=[1, 2, 1])
+        r = h * 0.2
+        d.ellipse((x0 + w / 2 - r, y0 + h / 2 - r, x0 + w / 2 + r, y0 + h / 2 + r), fill=WHITE)
+    elif code == "kh":
+        bands((3, 46, 161), (224, 0, 37), (3, 46, 161), weights=[1, 2, 1])
+        d.rectangle((x0 + w * 0.36, y0 + h * 0.36, x0 + w * 0.64, y0 + h * 0.66), fill=WHITE)
+    elif code == "mm":
+        bands((254, 203, 0), (52, 178, 51), (234, 40, 57))
+        _star(d, x0 + w / 2, y0 + h * 0.55, h * 0.45, WHITE)
+    elif code == "jp":
+        d.rectangle(box, fill=WHITE)
+        r = h * 0.3
+        d.ellipse((x0 + w / 2 - r, y0 + h / 2 - r, x0 + w / 2 + r, y0 + h / 2 + r),
+                  fill=(188, 0, 45))
+    elif code == "kr":
+        d.rectangle(box, fill=WHITE)
+        r = h * 0.3
+        c = (x0 + w / 2 - r, y0 + h / 2 - r, x0 + w / 2 + r, y0 + h / 2 + r)
+        d.pieslice(c, 180, 360, fill=(205, 46, 58))
+        d.pieslice(c, 0, 180, fill=(0, 71, 160))
+    elif code == "cn":
+        d.rectangle(box, fill=(238, 28, 37))
+        _star(d, x0 + w * 0.25, y0 + h * 0.32, h * 0.22, (255, 255, 0))
+    elif code == "vn":
+        d.rectangle(box, fill=(218, 37, 29))
+        _star(d, x0 + w / 2, y0 + h / 2 + 0.3 * k, h * 0.34, (255, 255, 0))
 
 
 # --------------------------------------------------------------------- art
@@ -431,7 +766,7 @@ def _cover(art: Optional[Image.Image], size, accent) -> Image.Image:
         return ImageOps.fit(art, (w, h))
     cover = Image.new("RGB", (w, h), accent)
     s = min(w, h)
-    _note(ImageDraw.Draw(cover), (w - s * 0.42) / 2, (h - s * 0.42) / 2, s * 0.42, WHITE)
+    _note(_Draw(cover), (w - s * 0.42) / 2, (h - s * 0.42) / 2, s * 0.42, WHITE)
     return cover
 
 
@@ -454,7 +789,7 @@ def _source_badge(img: Image.Image, x: float, y: float, track: Track):
     name = SOURCE_NAMES.get(key)
     if not name:
         return
-    d = ImageDraw.Draw(img)
+    d = _Draw(img)
     fnt = font("Medium", 15)
     tw = d.textlength(name, font=fnt)
     color = SOURCE_COLORS[key]
@@ -476,10 +811,10 @@ def _art_plain(canvas, g: Geo, art, a1, track):
 def _art_neon(canvas, g: Geo, art, a1, track):
     box = (g.art_x - 2, g.art_y - 2, g.art_x + g.art + 2, g.art_y + g.art + 2)
     glow = Image.new("RGBA", canvas.size, (0, 0, 0, 0))
-    ImageDraw.Draw(glow).rounded_rectangle(box, 26, outline=(*a1, 255), width=8)
+    _Draw(glow).rounded_rectangle(box, 26, outline=(*a1, 255), width=8)
     canvas.alpha_composite(glow.filter(ImageFilter.GaussianBlur(14)))
     canvas.alpha_composite(_rounded(_cover(art, g.art, a1), 24), (g.art_x, g.art_y))
-    ImageDraw.Draw(canvas).rounded_rectangle(box, 26, outline=_mix(a1, WHITE, 0.35), width=3)
+    _Draw(canvas).rounded_rectangle(box, 26, outline=_mix(a1, WHITE, 0.35), width=3)
     _source_badge(canvas, g.art_x + 12, g.art_y + g.art - 38, track)
 
 
@@ -489,7 +824,7 @@ def _art_polaroid(canvas, g: Geo, art, a1, track):
     frame = Image.new("RGBA", (s, s), (246, 243, 236, 255))
     photo = _cover(art, (s - 2 * pad, s - pad - bottom), a1)
     frame.paste(photo, (pad, pad))
-    d = ImageDraw.Draw(frame)
+    d = _Draw(frame)
     caption = track.artist or display_title(track)
     fnt = font("Regular", max(s // 18, 13))
     d.text((s / 2, s - bottom / 2), _fit(d, caption, fnt, s - 2 * pad), font=fnt,
@@ -505,7 +840,7 @@ def _art_cassette(canvas, g: Geo, art, a1, track):
     w = g.art
     h = int(w * 0.66)
     body = Image.new("RGBA", (w, h), (0, 0, 0, 0))
-    d = ImageDraw.Draw(body)
+    d = _Draw(body)
     shell = _mix(a1, (18, 18, 24), 0.6)
     d.rounded_rectangle((0, 0, w, h), 18, fill=(*shell, 255))
     lb = (14, 14, w - 14, int(h * 0.70))
@@ -547,7 +882,7 @@ def _text(d: ImageDraw.ImageDraw, g: Geo, y: float, text: str, fnt, fill):
 def _glow_text(canvas: Image.Image, g: Geo, y: float, text: str, fnt, color):
     """Neon: a blurred coloured copy behind the text."""
     layer = Image.new("RGBA", canvas.size, (0, 0, 0, 0))
-    _text(ImageDraw.Draw(layer), g, y, text, fnt, (*color, 255))
+    _text(_Draw(layer), g, y, text, fnt, (*color, 255))
     canvas.alpha_composite(layer.filter(ImageFilter.GaussianBlur(7)))
 
 
@@ -579,7 +914,7 @@ def _avatar(avatar: Optional[bytes], size: int) -> Optional[Image.Image]:
         return None
     img = ImageOps.fit(img.convert("RGBA"), (size * 3, size * 3), Image.LANCZOS)
     mask = Image.new("L", img.size, 0)
-    ImageDraw.Draw(mask).ellipse((0, 0, *img.size), fill=255)
+    _Draw(mask).ellipse((0, 0, *img.size), fill=255)
     img.putalpha(mask)
     return img.resize((size, size), Image.LANCZOS)
 
@@ -602,7 +937,7 @@ def _render_base(track: Track, art_bytes: Optional[bytes], g: Geo, theme: str,
                  avatar_bytes: Optional[bytes] = None, night: bool = False) -> Base:
     """Static part (background, cover, title, artist, requester). Cached per track."""
     key = (track.url, track.title, track.artist, track.requester_name,
-           len(art_bytes or b""), len(avatar_bytes or b""), g, theme, night)
+           len(art_bytes or b""), len(avatar_bytes or b""), g, theme, night, _font_files())
     if key in _base_cache:
         _base_cache.move_to_end(key)
         return _base_cache[key]
@@ -628,7 +963,7 @@ def _render_base(track: Track, art_bytes: Optional[bytes], g: Geo, theme: str,
     accent = _readable(a1, bg)
     accent2 = _readable(a2, bg)
 
-    d = ImageDraw.Draw(canvas)
+    d = _Draw(canvas)
     if g is MINI:
         fnt = font("Bold", g.title_size)
         d.text((g.x0, g.title_y), _fit(d, display_title(track), fnt, g.max_w), font=fnt, fill=WHITE)
@@ -646,7 +981,7 @@ def _render_base(track: Track, art_bytes: Optional[bytes], g: Geo, theme: str,
         for line in lines:
             if theme == "neon":
                 _glow_text(canvas, g, y, line, title_font, a1)
-                d = ImageDraw.Draw(canvas)
+                d = _Draw(canvas)
             _text(d, g, y, line, title_font, WHITE)
             y += lh
         who = f"ขอโดย {track.requester_name or '-'}"
@@ -677,7 +1012,7 @@ def _render_base(track: Track, art_bytes: Optional[bytes], g: Geo, theme: str,
             width = (av.width + 8 if av else 0) + d.textlength(who, font=fnt)
             x = _row_x(g, min(width, g.max_w))
             _who(canvas, d, x, y + 4, who, fnt, grey, av, g.max_w)
-            d = ImageDraw.Draw(canvas)
+            d = _Draw(canvas)
             base = Base(canvas, accent, accent2, bg, y + 32)
 
     _base_cache[key] = base
@@ -737,33 +1072,48 @@ def heat_peak(heat: tuple[float, ...]) -> Optional[float]:
     return (i + 0.5) / len(heat)
 
 
+HOT_LEVEL = 0.85  # heatmap level (of the peak) that counts as the hit part
+HOT_BAR = (255, 140, 40)
+
+
+def hot_bars(heat: tuple[float, ...], n: int) -> list[bool]:
+    """Which of n waveform bars fall in the hit part (heat at HOT_LEVEL of the peak)."""
+    if not heat or max(heat) <= 0:
+        return [False] * n
+    top = max(heat)
+    return [heat[min(int((i + 0.5) / n * len(heat)), len(heat) - 1)] >= HOT_LEVEL * top
+            for i in range(n)]
+
+
 def _draw_wave(canvas: Image.Image, g: Geo, track: Track, ratio: Optional[float], c1, c2,
                bg, glow: bool = False):
-    """ratio None = everything dim (live / loading), 1.0 = everything lit (share card)."""
+    """ratio None = everything dim (live / loading), 1.0 = everything lit (share card).
+    The hit part is orange, so people see it coming."""
     n = g.max_w // (WAVE_BAR + WAVE_GAP)
     x0, total = _wave_box(g)
     cy = g.wave_y + g.wave_h / 2
     heat = tuple(track._heatmap or ())
     heights = _wave_heights(track.video_id or track.url, n, heat)
+    hot = hot_bars(heat, n) if track.duration and g is not MINI else [False] * n
     layer = Image.new("RGBA", canvas.size, (0, 0, 0, 0))
-    ld = ImageDraw.Draw(layer)
+    ld = _Draw(layer)
     lit = []
     for i, hgt in enumerate(heights):
         x = x0 + i * (WAVE_BAR + WAVE_GAP)
         half = max(hgt * g.wave_h / 2, 2)
         box = (x, cy - half, x + WAVE_BAR, cy + half)
         if ratio is not None and (i + 0.5) / n <= ratio:
-            lit.append((box, _mix(c1, c2, i / max(n - 1, 1))))
+            lit.append((box, HOT_BAR if hot[i] else _mix(c1, c2, i / max(n - 1, 1))))
         else:
-            ld.rounded_rectangle(box, 2, fill=(255, 255, 255, 70))
+            ld.rounded_rectangle(box, 2, fill=(*HOT_BAR, 120) if hot[i] else (255, 255, 255, 70))
     canvas.alpha_composite(layer)
     if glow and lit:
         gl = Image.new("RGBA", canvas.size, (0, 0, 0, 0))
-        gd = ImageDraw.Draw(gl)
+        gd = _Draw(gl)
         for box, color in lit:
             gd.rounded_rectangle(box, 2, fill=(*color, 255))
         canvas.alpha_composite(gl.filter(ImageFilter.GaussianBlur(6)))
-    d = ImageDraw.Draw(canvas)
+    d = _Draw(canvas)
     for box, color in lit:
         d.rounded_rectangle(box, 2, fill=color)
 
@@ -799,7 +1149,7 @@ def _draw_chips(canvas: Image.Image, g: Geo, chips: list[tuple]):
     """chips: (icon, text, rgba fill, text colour, muted)."""
     k = g.s
     fnt = font("Medium", round(17 * k))
-    d = ImageDraw.Draw(canvas)
+    d = _Draw(canvas)
     gap, icon_w, pad = 10 * k, (ICON_W + 8) * k, 26 * k
     sizes = []
     for icon, text, *_ in chips:
@@ -811,14 +1161,14 @@ def _draw_chips(canvas: Image.Image, g: Geo, chips: list[tuple]):
     x = _row_x(g, sum(sizes) + gap * (len(sizes) - 1))
     y0, y1 = g.chips_y, g.chips_y + 30 * k
     layer = Image.new("RGBA", canvas.size, (0, 0, 0, 0))
-    ld = ImageDraw.Draw(layer)
+    ld = _Draw(layer)
     spots = []
     for (icon, text, fill, color, muted), w in zip(chips, sizes):
         ld.rounded_rectangle((x, y0, x + w, y1), 15 * k, fill=fill)
         spots.append((x + 13 * k, icon, text, color, muted))
         x += w + gap
     canvas.alpha_composite(layer)
-    d = ImageDraw.Draw(canvas)
+    d = _Draw(canvas)
     cy = (y0 + y1) / 2
     for tx, icon, text, color, muted in spots:
         if icon:
@@ -861,9 +1211,13 @@ def short_count(n: int) -> str:
     return str(n)
 
 
-def _info_chips(st: CardState, fill, text) -> list[tuple]:
-    """Views and year: nice to know, so they are the first to go when space runs out."""
+def _info_chips(st: CardState, fill, text, track: Optional[Track] = None) -> list[tuple]:
+    """Language, views and year: nice to know, so they are the first to go when space
+    runs out."""
     out = []
+    lang = song_language(f"{track.title} {track.artist or ''}") if track is not None else None
+    if lang:
+        out.append((f"flag:{lang}", LANGUAGES[lang], fill, text, False))
     if st.views:
         out.append(("play", short_count(st.views), fill, text, False))
     if st.year:
@@ -891,7 +1245,7 @@ def _badges(st: CardState, track: Optional[Track] = None) -> list[tuple]:
 
 
 def _draw_label(canvas: Image.Image, g: Geo, st: CardState, track: Track, accent):
-    d = ImageDraw.Draw(canvas)
+    d = _Draw(canvas)
     k = g.s
     fnt = font("Medium", round(19 * k))
     live = not track.duration
@@ -945,7 +1299,7 @@ def _eq_frame(i: int) -> tuple:
 
 def _eq(canvas: Image.Image, spot, heights):
     x, cy, k, color = spot
-    d = ImageDraw.Draw(canvas)
+    d = _Draw(canvas)
     bw, gap, full = 4 * k, 2.5 * k, 18 * k
     for i, h in enumerate(heights):
         bh = max(full * h, 3 * k)
@@ -989,7 +1343,7 @@ def _draw_next(canvas: Image.Image, g: Geo, title: str, accent, bg,
                thumb: Optional[Image.Image], more: tuple = (), extra: int = 0):
     """'Up next' row: the next song's cover and title, then the covers of the songs after
     it (more) and how many others wait (+extra)."""
-    d = ImageDraw.Draw(canvas)
+    d = _Draw(canvas)
     k = g.s
     size, thumb_w, gap = round(18 * k), round(THUMB * k), 8 * k
     head, body = font("Medium", size), font("Regular", size)
@@ -1006,7 +1360,7 @@ def _draw_next(canvas: Image.Image, g: Geo, title: str, accent, bg,
     ty = g.next_y + k
     small = _cover(thumb, thumb_w, _mix(accent, bg, 0.4))
     canvas.alpha_composite(_rounded(small, round(6 * k)), (int(tx), int(ty)))
-    d = ImageDraw.Draw(canvas)
+    d = _Draw(canvas)
     d.text((tx + thumb_w + gap, g.next_y), text, font=body, fill=_readable((215, 215, 225), bg))
     mx = tx + thumb_w + gap + d.textlength(text, font=body) + 2 * gap
     for img in more:
@@ -1014,7 +1368,7 @@ def _draw_next(canvas: Image.Image, g: Geo, title: str, accent, bg,
         canvas.alpha_composite(_rounded(cover, round(6 * k)), (int(mx), int(ty)))
         mx += thumb_w + 4 * k
     if plus:
-        d = ImageDraw.Draw(canvas)
+        d = _Draw(canvas)
         d.text((mx + 2 * k, g.next_y), plus, font=head, fill=_readable((185, 185, 198), bg))
 
 
@@ -1025,13 +1379,13 @@ def _draw_up_next(canvas: Image.Image, g: Geo, title: str, thumb, accent, bg):
     top = g.chips_y + 2
     cover = _rounded(_cover(thumb, size, _mix(accent, bg, 0.4)), round(10 * k))
     text_w = g.max_w - size - 16 * k
-    d = ImageDraw.Draw(canvas)
+    d = _Draw(canvas)
     head, body = font("Medium", round(17 * k)), font("Bold", round(23 * k))
     name = _fit(d, title, body, text_w)
     width = size + 16 * k + max(d.textlength(name, font=body), d.textlength("ต่อไป · UP NEXT", font=head))
     x = _row_x(g, width)
     canvas.alpha_composite(cover, (int(x), int(top)))
-    d = ImageDraw.Draw(canvas)
+    d = _Draw(canvas)
     tx = x + size + 16 * k
     d.text((tx, top + 4 * k), "ต่อไป · UP NEXT", font=head, fill=accent)
     d.text((tx, top + 26 * k), name, font=body, fill=WHITE)
@@ -1039,7 +1393,7 @@ def _draw_up_next(canvas: Image.Image, g: Geo, title: str, thumb, accent, bg):
 
 def _draw_empty_queue(canvas: Image.Image, g: Geo, accent, bg):
     """Fills the 'up next' row when nothing is queued: how to add a song."""
-    d = ImageDraw.Draw(canvas)
+    d = _Draw(canvas)
     k = g.s
     fnt = font("Regular", round(18 * k))
     head = font("Medium", round(18 * k))
@@ -1061,7 +1415,7 @@ def _right_time(track: Track, st: CardState) -> str:
 
 def _draw_times(canvas: Image.Image, g: Geo, left: str, right: str, right_color=None,
                 middle: str = ""):
-    d = ImageDraw.Draw(canvas)
+    d = _Draw(canvas)
     size = 14 if g is MINI else round(18 * g.s)
     fnt = font("Regular", size)
     x0, total = _wave_box(g)
@@ -1080,7 +1434,7 @@ def _draw_times(canvas: Image.Image, g: Geo, left: str, right: str, right_color=
 def _spinner(canvas: Image.Image, cx: float, cy: float, r: float):
     """A loading ring: a dark disc, a faint track and a bright arc."""
     layer = Image.new("RGBA", canvas.size, (0, 0, 0, 0))
-    d = ImageDraw.Draw(layer)
+    d = _Draw(layer)
     pad = r * 0.55
     d.ellipse((cx - r - pad, cy - r - pad, cx + r + pad, cy + r + pad), fill=(0, 0, 0, 150))
     box = (cx - r, cy - r, cx + r, cy + r)
@@ -1128,7 +1482,7 @@ def _render_mini(track: Track, base: Base, st: CardState) -> bytes:
     canvas = base.canvas.copy()
     _mood(canvas, st, base.accent, base.accent2)
     if st.paused:  # small pause mark on the cover
-        d = ImageDraw.Draw(canvas)
+        d = _Draw(canvas)
         cx, cy = g.art_x + g.art / 2, g.art_y + g.art / 2
         d.ellipse((cx - 20, cy - 20, cx + 20, cy + 20), fill=(0, 0, 0))
         d.rectangle((cx - 8, cy - 9, cx - 3, cy + 9), fill=WHITE)
@@ -1153,7 +1507,7 @@ def _server_icon(canvas: Image.Image, g: Geo, icon: Optional[bytes]):
         return
     x, y = g.w - SERVER_ICON - 22, 18
     ring = Image.new("RGBA", canvas.size, (0, 0, 0, 0))
-    ImageDraw.Draw(ring).ellipse((x - 2, y - 2, x + SERVER_ICON + 2, y + SERVER_ICON + 2),
+    _Draw(ring).ellipse((x - 2, y - 2, x + SERVER_ICON + 2, y + SERVER_ICON + 2),
                                  fill=(255, 255, 255, 70))
     canvas.alpha_composite(ring)
     canvas.alpha_composite(img, (x, y))
@@ -1182,7 +1536,7 @@ def render(track: Track, art_bytes: Optional[bytes], st: CardState = CardState()
     eq_spot = _draw_label(canvas, g, st, track, accent)
 
     if st.mode == "error":
-        d = ImageDraw.Draw(canvas)
+        d = _Draw(canvas)
         fnt = font("Regular", round(18 * g.s))
         y = g.chips_y
         for line in _wrap(d, st.reason or "ไม่ทราบสาเหตุ", fnt, g.max_w, 3):
@@ -1192,7 +1546,7 @@ def render(track: Track, art_bytes: Optional[bytes], st: CardState = CardState()
 
     if st.mode == "loading":
         layer = Image.new("RGBA", canvas.size, (0, 0, 0, 0))
-        ld = ImageDraw.Draw(layer)
+        ld = _Draw(layer)
         k = g.s
         x = _row_x(g, (3 * 90 + 2 * 10) * k)
         for i in range(3):  # skeleton chips
@@ -1219,7 +1573,7 @@ def render(track: Track, art_bytes: Optional[bytes], st: CardState = CardState()
             chips.append(("loop", "เพลง" if st.loop == "track" else "คิว", soft, chip_text, False))
         if st.queue_len:
             chips.append(("queue", f"{st.queue_len}", soft, chip_text, False))
-        _draw_chips(canvas, g, chips + _badges(st, track) + _info_chips(st, soft, chip_text))
+        _draw_chips(canvas, g, chips + _badges(st, track) + _info_chips(st, soft, chip_text, track))
         if st.next_title:
             arts = list(next_art) if isinstance(next_art, (list, tuple)) else [next_art]
             more = tuple(_open_art(a) for a in arts[1:3])
@@ -1303,7 +1657,7 @@ def render_quote(lines: list[str], track: Track, art_bytes: Optional[bytes]) -> 
     canvas.alpha_composite(_gradient((w, h), a1, a2, 70, 10))
     bg = tuple(int(v) for v in ImageStat.Stat(canvas.convert("RGB")).mean)
     accent = _readable(a1, bg)
-    d = ImageDraw.Draw(canvas)
+    d = _Draw(canvas)
 
     # the lyric: as big as fits in four lines
     text = [ln.strip() or "♪" for ln in lines if ln is not None][:2] or ["♪"]
@@ -1320,7 +1674,7 @@ def render_quote(lines: list[str], track: Track, art_bytes: Optional[bytes]) -> 
     cover = _rounded(_cover(art, s_, a1), 14)
     fy = h - 60 - s_
     canvas.alpha_composite(cover, (100, fy))
-    d = ImageDraw.Draw(canvas)
+    d = _Draw(canvas)
     tx = 100 + s_ + 24
     title_f, artist_f = font("Bold", 32), font("Regular", 24)
     d.text((tx, fy + 14), _fit(d, display_title(track), title_f, w - tx - 100), font=title_f,
@@ -1354,7 +1708,7 @@ def render_queue(rows: list[dict], header: str, sub: str,
     canvas.alpha_composite(_gradient((w, h), a1, a2, 60, 20))
     bg = tuple(int(v) for v in ImageStat.Stat(canvas.convert("RGB")).mean)
     accent = _readable(a1, bg)
-    d = ImageDraw.Draw(canvas)
+    d = _Draw(canvas)
     d.text((40, 30), "คิวถัดไป · UP NEXT", font=font("Medium", 19), fill=accent)
     d.text((40, 56), _fit(d, header, font("Bold", 30), w - 80), font=font("Bold", 30), fill=WHITE)
     d.text((w - 40, 66), sub, font=font("Regular", 17), fill=(200, 200, 212), anchor="ra")
@@ -1364,15 +1718,15 @@ def render_queue(rows: list[dict], header: str, sub: str,
         y = 112 + i * row_h
         if i % 2 == 0:
             layer = Image.new("RGBA", canvas.size, (0, 0, 0, 0))
-            ImageDraw.Draw(layer).rounded_rectangle((28, y - 6, w - 28, y + row_h - 10), 14,
+            _Draw(layer).rounded_rectangle((28, y - 6, w - 28, y + row_h - 10), 14,
                                                     fill=(255, 255, 255, 16))
             canvas.alpha_composite(layer)
-        d = ImageDraw.Draw(canvas)
+        d = _Draw(canvas)
         d.text((62, y + row_h / 2 - 8), str(r["pos"]), font=font("Bold", 22), fill=accent,
                anchor="mm")
         cover = _cover(_open_art(arts[i] if i < len(arts) else None), 64, _mix(a1, bg, 0.3))
         canvas.alpha_composite(_rounded(cover, 10), (92, y))
-        d = ImageDraw.Draw(canvas)
+        d = _Draw(canvas)
         right_w = 170
         d.text((172, y + 2), _fit(d, r["title"], font("Medium", 21), w - 172 - right_w - 40),
                font=font("Medium", 21), fill=WHITE)
@@ -1407,7 +1761,8 @@ def _fmt_long(seconds: int) -> str:
     return f"{h} ชม. {m} นาที" if h else f"{m} นาที"
 
 
-def render_summary(stats: dict, arts: list[Optional[bytes]]) -> bytes:
+def render_summary(stats: dict, arts: list[Optional[bytes]],
+                   label: str = "สรุปเซสชัน · SESSION RECAP") -> bytes:
     w, h = 1000, 420
     first = _open_art(arts[0]) if arts else None
     a1, a2 = _palette(first)
@@ -1415,20 +1770,20 @@ def render_summary(stats: dict, arts: list[Optional[bytes]]) -> bytes:
     canvas.alpha_composite(_gradient((w, h), a1, a2, 60, 20))
     bg = tuple(int(v) for v in ImageStat.Stat(canvas.convert("RGB")).mean)
     accent = _readable(a1, bg)
-    d = ImageDraw.Draw(canvas)
-    d.text((40, 32), "สรุปเซสชัน · SESSION RECAP", font=font("Medium", 19), fill=accent)
+    d = _Draw(canvas)
+    d.text((40, 32), label, font=font("Medium", 19), fill=accent)
     d.text((40, 58), f"ฟังไปทั้งหมด {stats['count']} เพลง", font=font("Bold", 36), fill=WHITE)
 
     boxes = [(str(stats["count"]), "เพลง"), (_fmt_long(stats["seconds"]), "เวลารวม"),
              (str(stats["people"]), "คนขอเพลง")]
     bw = (w - 80 - 2 * 20) / 3
     layer = Image.new("RGBA", canvas.size, (0, 0, 0, 0))
-    ld = ImageDraw.Draw(layer)
+    ld = _Draw(layer)
     for i in range(3):
         x = 40 + i * (bw + 20)
         ld.rounded_rectangle((x, 122, x + bw, 206), 18, fill=(255, 255, 255, 28))
     canvas.alpha_composite(layer)
-    d = ImageDraw.Draw(canvas)
+    d = _Draw(canvas)
     for i, (big, small) in enumerate(boxes):
         x = 40 + i * (bw + 20) + 22
         d.text((x, 130), _fit(d, big, font("Bold", 32), bw - 44), font=font("Bold", 32), fill=WHITE)
@@ -1445,7 +1800,7 @@ def render_summary(stats: dict, arts: list[Optional[bytes]]) -> bytes:
         x = int(40 + i * (cw + 20))
         art = _open_art(arts[i] if i < len(arts) else None)
         _paste_cover(canvas, _cover(art, 72, a1), x, 296, radius=12)
-        d = ImageDraw.Draw(canvas)
+        d = _Draw(canvas)
         lines = _wrap(d, play["title"], font("Medium", 17), cw - 86, 2)
         for j, line in enumerate(lines):
             d.text((x + 84, 294 + j * 24), line, font=font("Medium", 17), fill=WHITE)
@@ -1580,6 +1935,8 @@ def _remember_accent(track: Track, accent: Optional[int]):
 
 async def make_card(track: Track, state: CardState = CardState()) -> Optional[bytes]:
     try:
+        await ensure_fonts(track.name, track.artist or "", state.next_title,
+                           track.requester_name or "")
         art, next_art, avatar, icon, *more = await asyncio.gather(
             fetch_track_art(track), fetch_art(state.next_thumb or None),
             fetch_art(state.avatar or None), fetch_art(state.server_icon or None),
@@ -1601,7 +1958,9 @@ async def warm(track: Track, theme: str, layout: str, avatar: str = "", night: b
     """Pre-render the static part of a card (download cover, blur, palette, title)
     before the track starts, so its panel appears without waiting."""
     try:
-        art, av = await asyncio.gather(fetch_track_art(track), fetch_art(avatar or None))
+        art, av, _ = await asyncio.gather(fetch_track_art(track), fetch_art(avatar or None),
+                                          ensure_fonts(track.name, track.artist or "",
+                                                       track.requester_name or ""))
         g = GEOS.get(layout, WIDE)
         accent = await _run(_job_warm, track, art, g, theme if theme in THEMES else "blur",
                             None if g is MINI else av, night)
@@ -1613,19 +1972,24 @@ async def warm(track: Track, theme: str, layout: str, avatar: str = "", night: b
 async def make_queue_card(rows: list[dict], header: str, sub: str,
                           thumbs: list[Track]) -> Optional[bytes]:
     try:
-        arts = await asyncio.gather(*(fetch_track_art(t) for t in thumbs))
+        arts, _ = await asyncio.gather(
+            asyncio.gather(*(fetch_track_art(t) for t in thumbs)),
+            ensure_fonts(*(f"{r['title']} {r.get('artist') or ''} {r['requester']}" for r in rows)))
         return await _run(render_queue, rows, header, sub, list(arts))
     except Exception as exc:
         log.warning("queue card failed: %s", exc)
         return None
 
 
-async def make_summary(plays: list[dict]) -> Optional[bytes]:
+async def make_summary(plays: list[dict], label: str = "") -> Optional[bytes]:
     try:
         stats = summarize(plays)
         tracks = [Track(title=p["title"], url=p["url"], thumbnail=p.get("thumbnail"),
                         origin=p.get("origin") or "youtube") for p, _ in stats["top_tracks"]]
-        arts = await asyncio.gather(*(fetch_track_art(t) for t in tracks))
+        arts, _ = await asyncio.gather(asyncio.gather(*(fetch_track_art(t) for t in tracks)),
+                                       ensure_fonts(*(t.title for t in tracks)))
+        if label:
+            return await _run(render_summary, stats, list(arts), label)
         return await _run(render_summary, stats, list(arts))
     except Exception as exc:
         log.warning("summary render failed: %s", exc)
