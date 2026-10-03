@@ -218,7 +218,7 @@ class GuildPlayer:
     def humans_in_channel(self) -> list[discord.Member]:
         if not self.vc or not self.vc.channel:
             return []
-        return [m for m in self.vc.channel.members if not m.bot]
+        return [m for m in getattr(self.vc.channel, "members", ()) if not m.bot]
 
     def is_admin(self, member: discord.Member) -> bool:
         """Server managers bypass vote skip and per-user limits."""
@@ -312,11 +312,15 @@ class GuildPlayer:
             return f"⏭ ข้าม **{self.current.title}**"
         self.skip_votes.add(member.id)
         self.skip_votes &= {m.id for m in humans}
-        need = math.ceil(len(humans) / 2)
+        need = self.skip_need()
         if len(self.skip_votes) >= need:
             self.skip()
             return f"⏭ โหวตครบ {need} เสียง ข้ามแล้ว"
         return f"🗳 โหวตข้าม {len(self.skip_votes)}/{need}"
+
+    def skip_need(self) -> int:
+        """Votes needed to skip: half the people in the voice channel."""
+        return max(math.ceil(len(self.humans_in_channel()) / 2), 1)
 
     def toggle_pause(self) -> bool:
         """Return True when now paused."""

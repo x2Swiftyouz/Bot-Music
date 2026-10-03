@@ -30,15 +30,44 @@ def track_color(track: Track) -> int:
     return SOURCE_COLORS.get(key, SOURCE_COLORS["other"])
 
 
+END_TS_SLACK = 2  # seconds the end time may drift before the panel text changes
+
+
+def end_timestamp(p: "GuildPlayer") -> Optional[int]:
+    """Unix time the current song ends. Kept steady between ticks so an unchanged
+    panel is not edited again only because the clock moved by a second."""
+    t = p.current
+    if not t or not t.duration or p.is_paused:
+        return None
+    end = int(time.time() + t.duration - p.position)
+    old = getattr(p, "_end_ts", None)
+    if old is None or abs(old - end) > END_TS_SLACK:
+        p._end_ts = old = end
+    return old
+
+
+def _countdown(p: "GuildPlayer") -> str:
+    """Time left as a Discord timestamp: each viewer's client counts it down by itself."""
+    t = p.current
+    if not t.duration:
+        return "🔴 LIVE"
+    if p.is_paused:
+        return f"⏸ หยุดที่ `{fmt_time(p.position)} / {t.fmt_duration()}`"
+    return f"⏳ จบ <t:{end_timestamp(p)}:R>"
+
+
 def _time_line(p: "GuildPlayer") -> str:
     t, pos = p.current, p.position
     right = f"`{t.fmt_duration()}`"
     if p.time_format == 1 and t.duration:
         right = f"`-{fmt_time(t.duration - pos)}`"
-    elif p.time_format == 2 and t.duration:
+    elif p.time_format == 2 and t.duration and not p.is_paused:
         # Discord shows this timestamp in each viewer's own time zone
-        right = f"จบ <t:{int(time.time() + t.duration - pos)}:t>"
-    return f"`{fmt_time(pos)}` {progress_bar(pos, t.duration)} {right}"
+        right = f"จบ <t:{end_timestamp(p)}:t>"
+    line = f"`{fmt_time(pos)}` {progress_bar(pos, t.duration)} {right}"
+    if t.duration and not p.is_paused and p.time_format != 2:
+        line += f"\n-# ⏳ จบ <t:{end_timestamp(p)}:R>"
+    return line
 
 
 def build_now_playing(p: "GuildPlayer", card: Optional[str] = None) -> discord.Embed:
@@ -64,7 +93,8 @@ def build_now_playing(p: "GuildPlayer", card: Optional[str] = None) -> discord.E
     state = "⏸ หยุดชั่วคราว" if p.is_paused else "▶️ กำลังเล่น"
     artist = f"**{t.artist}**\n" if t.artist else ""
     if p.compact:
-        e.description = f"{artist}{_time_line(p)}\n-# ขอโดย {t.requester_name or '-'}"
+        timing = _countdown(p) if has_card else _time_line(p)
+        e.description = f"{artist}{timing}\n-# ขอโดย {t.requester_name or '-'}"
         if p.queue:
             e.description += f" · ถัดไป: {p.queue[0].title[:50]}"
         e.set_footer(text=status_line(p))
@@ -80,7 +110,7 @@ def build_now_playing(p: "GuildPlayer", card: Optional[str] = None) -> discord.E
     e.set_author(name=state)
     if has_card:  # the card already shows artist, progress and badges
         e.set_image(url=f"attachment://{card_name}")
-        e.description = _time_line(p)
+        e.description = _countdown(p)
     else:
         if t.thumbnail:
             e.set_thumbnail(url=t.thumbnail)
@@ -119,7 +149,7 @@ def status_line(p: "GuildPlayer") -> str:
     if p.stay_247:
         parts.append("🌙 24/7")
     if p.skip_votes:
-        parts.append(f"🗳 โหวตข้าม {len(p.skip_votes)}")
+        parts.append(f"🗳 โหวตข้าม {len(p.skip_votes)}/{p.skip_need()}")
     return " · ".join(parts)
 
 
@@ -711,6 +741,26 @@ VOLUME_PRESETS = (10, 25, 50, 75, 100, 125)
 SEEK_STEP = 10  # seconds for the ⏪ ⏩ panel buttons
 
 
+def _seek_state(view, p: "GuildPlayer"):
+    """⏪ needs something to rewind, ⏩ needs room before the end."""
+    t = p.current
+    if not t or not t.duration or p.loading:
+        view.rewind.disabled = view.forward.disabled = True
+        return
+    pos = p.position
+    view.rewind.disabled = pos < 1
+    view.forward.disabled = pos + SEEK_STEP >= t.duration - 1
+
+
+def _counts(view, p: "GuildPlayer"):
+    """Numbers on the buttons: songs waiting, and skip votes so far."""
+    if p.queue:
+        view.queue_btn.label = f"{len(p.queue)}" if len(p.queue) < 1000 else "999+"
+    if p.skip_votes and p.current:
+        view.skip.label = f"{len(p.skip_votes)}/{p.skip_need()}"
+        view.skip.style = discord.ButtonStyle.primary
+
+
 class PanelView(discord.ui.View):
     """Now-playing controls. Persistent (fixed custom_id), state-aware when given a player."""
 
@@ -729,14 +779,17 @@ class PanelView(discord.ui.View):
             self.loop.emoji = "🔂" if p.loop_mode == "track" else "🔁"
         self.vol_down.disabled = p.volume <= 0
         self.vol_up.disabled = p.volume >= 1.5
-        seekable = bool(p.current and p.current.duration)
-        self.rewind.disabled = self.forward.disabled = not seekable
+        _seek_state(self, p)
+        self.add_btn.disabled = len(p.queue) >= config.MAX_QUEUE
+        _counts(self, p)
         self.lyrics_btn.disabled = self.live_lyrics_btn.disabled = not p.current
         if p.live_lyrics:
             self.live_lyrics_btn.style = discord.ButtonStyle.primary
         if not p.current:
             for item in (self.pause, self.skip, self.vol_down, self.vol_up, self.volume_select):
                 item.disabled = True
+        elif p.loading:
+            self.pause.disabled = True
         current = int(round(p.volume * 100))
         for opt in self.volume_select.options:
             opt.default = int(opt.value) == current
@@ -820,11 +873,15 @@ class CompactPanelView(discord.ui.View):
         if p is None:
             return
         self.prev.disabled = not p.history
+        self.queue_btn.disabled = not p.queue and not p.current
         if p.is_paused:
             self.pause.emoji = "▶️"
             self.pause.style = discord.ButtonStyle.primary
         if not p.current:
             self.pause.disabled = self.skip.disabled = True
+        elif p.loading:
+            self.pause.disabled = True
+        _counts(self, p)
 
     @discord.ui.button(emoji="⏮", style=discord.ButtonStyle.secondary, custom_id="mbc:prev")
     async def prev(self, inter, _):
