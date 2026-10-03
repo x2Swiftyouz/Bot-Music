@@ -123,6 +123,22 @@ def clock_after(seconds: float) -> str:
 
 TIME_MODES = ("length", "remaining", "clock")
 
+
+def _media_urls(components) -> list[str]:
+    """Every media URL inside message components (galleries, thumbnails, files)."""
+    out = []
+    for c in components:
+        media = getattr(c, "media", None)
+        url = getattr(media, "url", None) or getattr(media, "proxy_url", None)
+        if isinstance(url, str):
+            out.append(url)
+        for attr in ("children", "items", "components"):
+            out += _media_urls(getattr(c, attr, None) or ())
+        accessory = getattr(c, "accessory", None)
+        if accessory is not None:
+            out += _media_urls([accessory])
+    return out
+
 # Ears hear -10 dB as "half as loud", so the volume percent is turned into gain with
 # gain = (percent/100) ** 1.66: 50% sounds half as loud as 100%, 25% a quarter.
 # (Plain gain = percent/100 makes 75% sound almost like 100% and 50% barely softer.)
@@ -173,6 +189,7 @@ class GuildPlayer:
         self._card_key = None         # card state of the last uploaded image
         self._card_at = 0.0
         self._blink = False
+        self._card_check = True  # see _card_present
         self._panel_sig = None        # last panel edit, to skip edits that change nothing
         self.track_plays = 0          # plays of the current track in this server (hit badge)
         self.requester_birthday = False
@@ -1156,6 +1173,11 @@ class GuildPlayer:
                     self._panel_sig = sig
                     if self._card_present(msg):
                         break
+                    if attempt:  # a fresh upload did not help: the check itself is wrong
+                        self._card_check = False
+                        log.warning("[%s] cannot verify the panel card, check turned off",
+                                    self.guild.id)
+                        break
                     log.info("[%s] panel card missing after edit, uploading it again",
                              self.guild.id)
                     self._card_key = None  # attempt 2 re-renders and re-uploads it
@@ -1180,12 +1202,17 @@ class GuildPlayer:
             log.warning("panel edit failed", exc_info=True)
 
     def _card_present(self, msg) -> bool:
-        """Is the card the panel shows really attached to the message Discord sent back?
-        A missing one shows as "image could not be loaded"."""
-        names = getattr(msg, "attachments", None)
-        if not self.has_card or names is None:
+        """Is the card the panel shows really on the message Discord sent back? A missing
+        one shows as "image could not be loaded". Classic messages list it in attachments,
+        Groove-style (Components V2) ones carry it as a media URL inside the components.
+        When the message gives no image information at all, assume it is fine."""
+        if not self.has_card or msg is None or not self._card_check:
+            return True
+        seen = [getattr(a, "filename", "") for a in getattr(msg, "attachments", None) or ()]
+        seen += _media_urls(getattr(msg, "components", None) or ())
+        if not seen:
             return True  # nothing to check against
-        return any(getattr(a, "filename", "") == self.card_name for a in names)
+        return any(self.card_name and self.card_name in s for s in seen)
 
     async def _panel_loop(self):
         while not self.destroyed:
