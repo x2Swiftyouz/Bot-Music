@@ -914,12 +914,13 @@ class GuildPlayer:
         card = await self.card_file("error", reason)
         loading, self.loading = self.loading, False
         if loading and self.panel_message and not self._is_request_panel():
-            try:
-                await self.panel_message.edit(content=text, embed=None, view=None,
-                                              attachments=[card] if card else [])
-            except discord.HTTPException:
-                pass
-            self.panel_message, self.has_card = None, False
+            async with self._panel_lock:
+                try:
+                    await self.panel_message.edit(content=text, embed=None, view=None,
+                                                  attachments=[card] if card else [])
+                except discord.HTTPException:
+                    pass
+                self.panel_message, self.has_card = None, False
         elif card:
             await self.send(text, file=card)
         else:
@@ -1008,6 +1009,12 @@ class GuildPlayer:
         return msg
 
     async def send_panel(self, loading: bool = False):
+        # same lock as edits: a timer edit must not run between rendering this card and
+        # sending it, or it would point the old panel at a file it does not have
+        async with self._panel_lock:
+            await self._send_panel(loading)
+
+    async def _send_panel(self, loading: bool):
         from core.ui import build_now_playing
         self.loading = loading
         card = await self._card_file(mode="loading" if loading else "play")
@@ -1034,6 +1041,12 @@ class GuildPlayer:
             clock.observe(self.panel_message)
         except discord.HTTPException as exc:
             log.debug("send_panel failed: %s", exc)
+            self._card_key = None
+            return
+        if self.panel_message is not None and not self._card_present(self.panel_message):
+            log.info("[%s] panel sent without its card, uploading it again", self.guild.id)
+            self._card_key = None
+            await self._edit_panel()
 
     async def update_panel(self, tick: bool = False):
         """Refresh the panel. tick=True (timer) skips if an edit is already running."""
@@ -1048,19 +1061,35 @@ class GuildPlayer:
         from core.ui import build_idle_embed, build_now_playing
         try:
             if self.current:
-                kwargs = {}
-                if self.has_card:
-                    card = await self._card_file(tick, mode="loading" if self.loading else "play")
-                    if card:
-                        kwargs["attachments"] = [card]
-                embed, view = build_now_playing(self), self.make_view()
-                sig = (json.dumps(embed.to_dict(), sort_keys=True, ensure_ascii=False),
-                       repr(view.to_components()))
-                if not kwargs and sig == self._panel_sig:
-                    return  # nothing visible changed (e.g. paused or live)
-                if self.panel_message:
-                    clock.observe(await self.panel_message.edit(embed=embed, view=view, **kwargs))
+                for attempt in range(2):
+                    kwargs = {}
+                    before = (self.card_name, self._card_key, self._card_at)
+                    if self.has_card:
+                        card = await self._card_file(tick and not attempt,
+                                                     mode="loading" if self.loading else "play")
+                        if card:
+                            kwargs["attachments"] = [card]
+                    embed, view = build_now_playing(self), self.make_view()
+                    sig = (json.dumps(embed.to_dict(), sort_keys=True, ensure_ascii=False),
+                           repr(view.to_components()))
+                    if not kwargs and sig == self._panel_sig:
+                        return  # nothing visible changed (e.g. paused or live)
+                    if not self.panel_message:
+                        return
+                    try:
+                        msg = await self.panel_message.edit(embed=embed, view=view, **kwargs)
+                    except Exception:
+                        # the new card never arrived: keep pointing at the one that did
+                        self.card_name, self._card_key, self._card_at = before
+                        self._card_key = None
+                        raise
+                    clock.observe(msg)
                     self._panel_sig = sig
+                    if self._card_present(msg):
+                        break
+                    log.info("[%s] panel card missing after edit, uploading it again",
+                             self.guild.id)
+                    self._card_key = None  # attempt 2 re-renders and re-uploads it
             else:
                 self.has_card = False
                 self._panel_sig = None
@@ -1076,8 +1105,18 @@ class GuildPlayer:
                 self.panel_message = None
         except discord.NotFound:
             self.panel_message = None
-        except discord.HTTPException:
-            self._card_key = None  # the upload may be lost: send a fresh card next time
+        except discord.HTTPException as exc:
+            log.debug("panel edit failed: %s", exc)
+        except Exception:  # network trouble must not stop the panel timer
+            log.warning("panel edit failed", exc_info=True)
+
+    def _card_present(self, msg) -> bool:
+        """Is the card the panel shows really attached to the message Discord sent back?
+        A missing one shows as "image could not be loaded"."""
+        names = getattr(msg, "attachments", None)
+        if not self.has_card or names is None:
+            return True  # nothing to check against
+        return any(getattr(a, "filename", "") == self.card_name for a in names)
 
     async def _panel_loop(self):
         while not self.destroyed:
