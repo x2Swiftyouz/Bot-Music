@@ -26,6 +26,13 @@ def progress_bar(pos: float, total: Optional[int], width: int = 18) -> str:
     return "▬" * filled + "🔘" + "▬" * (width - filled)
 
 
+def panel_color(p: "GuildPlayer") -> int:
+    """The colour of whatever the bot shows now: the playing song's cover, else the last
+    one's, so queue pages and the queue-end box match the panel."""
+    t = p.current or (p.history[-1] if getattr(p, "history", None) else None)
+    return track_color(t) if t else SOURCE_COLORS["other"]
+
+
 def track_color(track: Track) -> int:
     """The cover's main colour once a card was drawn for it, else the source's colour."""
     from core.card import accent_of
@@ -261,10 +268,11 @@ def recap_line(plays: list[dict]) -> str:
     return " · ".join(parts)
 
 
-def build_idle_embed(with_buttons: bool = False, recap: Optional[list[dict]] = None
-                     ) -> discord.Embed:
-    """recap: the songs this queue run played (shown above the buttons)."""
-    e = discord.Embed(color=SOURCE_COLORS["other"])
+def build_idle_embed(with_buttons: bool = False, recap: Optional[list[dict]] = None,
+                     color: Optional[int] = None) -> discord.Embed:
+    """recap: the songs this queue run played (shown above the buttons). color: the last
+    song's cover colour, so the box keeps its look when the queue ends."""
+    e = discord.Embed(color=SOURCE_COLORS["other"] if color is None else color)
     e.title = "⏹ จบคิวแล้ว"
     e.description = ("เล่นซ้ำเพลงล่าสุด เปิด 📻 Autoplay หรือเพิ่มเพลงใหม่ได้จากปุ่มด้านล่าง"
                      if with_buttons else "ใช้ `/play` เพื่อเล่นต่อ")
@@ -373,7 +381,7 @@ def build_queue_pages(p: "GuildPlayer", per_page: int = QUEUE_PER_PAGE,
     remain = p.total_remaining()
     title = f"🔍 ค้นในคิว: {query}" if query else "📜 คิวเพลง"
     for page in range(total_pages):
-        e = RowsEmbed(title=title[:256], color=SOURCE_COLORS["other"])
+        e = RowsEmbed(title=title[:256], color=panel_color(p))
         if p.current:
             c = p.current
             e.groove_head = (f"**กำลังเล่น:** [{_plain(c.name)}]({c.url}) "
@@ -1359,6 +1367,8 @@ class PanelView(discord.ui.View):
             self.loop.style = discord.ButtonStyle.primary
             self.loop.emoji = "🔂" if p.loop_mode == "track" else "🔁"
         self.hot_btn.disabled = hot_position(p) is None
+        if getattr(p, "autoplay", False):  # ⚙️ holds the autoplay switch: blue while it is on
+            self.settings_btn.style = discord.ButtonStyle.primary
         if hasattr(p, "stop_armed") and p.stop_armed():
             self.stop_btn.label = "กดอีกครั้งเพื่อหยุด"
         if p.volume <= 0:
@@ -1515,7 +1525,8 @@ class CompactPanelView(discord.ui.View):
     async def pause(self, inter, _):
         await act_pause(inter)
 
-    @discord.ui.button(emoji="⏭", style=discord.ButtonStyle.secondary, custom_id="mbc:skip")
+    @discord.ui.button(emoji="⏭", label="ข้าม", style=discord.ButtonStyle.secondary,
+                       custom_id="mbc:skip")  # the most used button on a phone: a bigger target
     async def skip(self, inter, _):
         await act_skip(inter)
 

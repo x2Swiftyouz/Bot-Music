@@ -1574,7 +1574,9 @@ class GuildPlayer:
                 else:
                     from core.ui import IdleView
                     recap, self._end_recap = self._end_recap, []
-                    embed = build_idle_embed(with_buttons=True, recap=recap)
+                    from core.ui import panel_color
+                    embed = build_idle_embed(with_buttons=True, recap=recap,
+                                             color=panel_color(self))
                     files = []
                     if len(recap) >= QUEUE_RECAP_MIN and config.MUSIC_CARD:
                         from core.card import make_summary, new_filename

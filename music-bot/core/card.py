@@ -688,8 +688,8 @@ def _icon(d: ImageDraw.ImageDraw, kind: str, x: float, cy: float, color, muted=F
 
 # Song language from the letters in its title: (code, name). Thai songs often carry Lao or
 # Korean words, so another script wins when it has a few letters of its own.
-LANGUAGES = {"la": "ลาว", "kr": "เกาหลี", "jp": "ญี่ปุ่น", "cn": "จีน", "kh": "กัมพูชา",
-             "mm": "พม่า", "vn": "เวียดนาม", "th": "ไทย"}
+LANGUAGES = {"la": "เพลงลาว", "kr": "เพลงเกาหลี", "jp": "เพลงญี่ปุ่น", "cn": "เพลงจีน",
+             "kh": "เพลงกัมพูชา", "mm": "เพลงพม่า", "vn": "เพลงเวียดนาม", "th": "เพลงไทย"}
 _VIET = set("ăâđêôơưĂÂĐÊÔƠƯ")
 
 
