@@ -189,7 +189,7 @@ python bot.py
 |---|---|---|
 | `UI_STYLE` | `groove` | `groove` = กล่อง Components V2, `classic` = embed แบบเดิม |
 | `MUSIC_CARD` | `true` | แสดงการ์ดรูป |
-| `CARD_REFRESH` | `20` | อัปโหลดการ์ดใหม่อย่างน้อยทุกกี่วินาทีระหว่างเล่น |
+| `CARD_REFRESH` | `10` | อัปโหลดการ์ดใหม่อย่างน้อยทุกกี่วินาทีระหว่างเล่น |
 | `CARD_ANIMATED` | `true` | แถบ equalizer ขยับบนการ์ด (WebP เคลื่อนไหว) |
 | `LYRICS_PREFETCH` | `true` | หาเนื้อเพลงตอนเริ่มเพลง ให้ปุ่ม 🎤 🎙 บอกว่ามีเนื้อหรือไม่ |
 | `PANEL_REFRESH` / `LYRICS_REFRESH` | `10` / `3` | อัปเดต panel ทุกกี่วินาที (ปกติ / ตอนเปิดเนื้อเพลงสด) |

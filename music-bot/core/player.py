@@ -957,7 +957,9 @@ class GuildPlayer:
         key = (self.current.url, dataclasses.replace(
             self.card_state(mode, reason), position=0, blink=False))
         now = time.monotonic()
-        if tick and key == self._card_key and now - self._card_at < config.CARD_REFRESH:
+        # 1 s slack: the timer ticks every PANEL_REFRESH (10 s), and a tick landing a hair
+        # early must not push the next card to the tick after
+        if tick and key == self._card_key and now - self._card_at < config.CARD_REFRESH - 1:
             return None
         if not self.current.duration:
             self._blink = not self._blink  # LIVE dot blinks between uploads
