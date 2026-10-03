@@ -18,7 +18,7 @@ import discord
 
 import config
 from core import clock, ratelimit
-from core.sources import Track, fmt_time, resolve_stream
+from core.sources import Track, explain_error, fmt_time, resolve_stream
 from core.audio import CountingSource, Prebuffer, Silence, SmoothVolume
 from core.stream import HTTPStreamReader
 
@@ -143,6 +143,7 @@ STOP_FADE_MS = 900  # ⏹ and leaving fade out at least this long
 SEEK_CROSSFADE_MS = 400  # a seek overlaps the song with itself: short, or it sounds doubled
 QUEUE_RECAP_MIN = 2  # songs in a queue run before "queue ended" shows a recap card
 ENDING_SECONDS = 10  # the card shows the next song this long before the end
+QUEUE_LOW_SECONDS = 60  # nothing queued, no autoplay: the card warns this long before the end
 HOT_PART = 0.85  # heatmap level (of the peak) that counts as the hit part (= card.HOT_LEVEL)
 
 
@@ -1211,7 +1212,16 @@ class GuildPlayer:
             mode=mode, reason=reason, avatar=self.avatar_url(t),
             animate=self._animate(mode), views=t._views if t else 0, year=t._year if t else "",
             night=is_night(), server_icon=self.server_icon_url(),
-            listeners=self.listener_avatars(), listener_count=len(self.humans_in_channel()))
+            listeners=self.listener_avatars(), listener_count=len(self.humans_in_channel()),
+            queue_low=self.queue_low())
+
+    def queue_low(self) -> bool:
+        """The music is about to stop: under a minute left, nothing queued, nothing to
+        repeat and autoplay off. The card's up-next row asks for a song."""
+        t = self.current
+        return bool(t and t.duration and not self.queue and self.loop_mode == "off"
+                    and not self.autoplay
+                    and t.duration - self.position <= QUEUE_LOW_SECONDS)
 
     def in_ending(self) -> bool:
         """Last ENDING_SECONDS of a song with another one queued: the card shows it."""
@@ -1327,8 +1337,11 @@ class GuildPlayer:
 
     async def _show_error(self, track: Track, reason: str):
         """Error card for a track that cannot play. Replaces the loading card if shown."""
-        text = f"⚠️ เล่นไม่ได้ ข้าม: **{track.name}**\n`{reason}`"
-        card = await self.card_file("error", reason)
+        cause, fix = explain_error(reason)
+        text = f"⚠️ เล่นไม่ได้ ข้าม: **{track.name}**\n{cause}"
+        if fix:
+            text += f"\n-# วิธีแก้: {fix}"
+        card = await self.card_file("error", f"{cause}\n{fix}" if fix else cause)
         loading, self.loading = self.loading, False
         if loading and self.panel_message and not self._is_request_panel():
             async with self._panel_lock:
@@ -1632,9 +1645,11 @@ class GuildPlayer:
                        and self.current and self.lyrics_url == self.current.url)
             wait = config.LYRICS_REFRESH if karaoke else config.PANEL_REFRESH
             t = self.current
-            if t and t.duration and self.queue and not self.is_paused:
-                until_end = t.duration - self.position - ENDING_SECONDS
-                if 0 < until_end < wait:  # wake up right when the "up next" card is due
+            if t and t.duration and not self.is_paused:
+                # wake up right when the "up next" card (or the "almost over" one) is due
+                lead = ENDING_SECONDS if self.queue else QUEUE_LOW_SECONDS
+                until_end = t.duration - self.position - lead
+                if 0 < until_end < wait:
                     wait = until_end + 0.3
             await asyncio.sleep(wait)
             if self.current and self.panel_message and (not self.is_paused

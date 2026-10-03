@@ -382,6 +382,7 @@ class CardState:
     queue_secs: int = 0         # length of the songs waiting (0 = unknown, e.g. a live one)
     listeners: tuple = ()       # avatar URLs of people in the voice channel (a few)
     listener_count: int = 0     # everyone in the voice channel ("+N" for the rest)
+    queue_low: bool = False     # last minute, nothing queued, no autoplay: ask for a song
 
 
 # -------------------------------------------------------------------- text
@@ -532,7 +533,7 @@ def alt_text(track: Track, st: CardState) -> str:
     """Screen-reader description of a card (Discord attachment alt text)."""
     who = f" โดย {track.artist}" if track.artist else ""
     if st.mode == "error":
-        return f"เล่นไม่ได้: {track.name}{who}. {st.reason}"[:1000]
+        return f"เล่นไม่ได้: {track.name}{who}. {st.reason.replace(chr(10), '. วิธีแก้: ')}"[:1000]
     if st.mode == "loading":
         return f"กำลังโหลด {track.name}{who}"[:1000]
     if not track.duration:
@@ -1585,18 +1586,24 @@ def _draw_up_next(canvas: Image.Image, g: Geo, title: str, thumb, accent, bg):
     d.text((tx, top + 26 * k), name, font=body, fill=WHITE)
 
 
-def _draw_empty_queue(canvas: Image.Image, g: Geo, accent, bg):
-    """Fills the 'up next' row when nothing is queued: how to add a song."""
+def _draw_empty_queue(canvas: Image.Image, g: Geo, accent, bg, low: bool = False):
+    """Fills the 'up next' row when nothing is queued: how to add a song. In the song's
+    last minute (low) it turns into an amber warning that the music is about to stop."""
     d = _Draw(canvas)
     k = g.s
-    fnt = font("Regular", round(18 * k))
+    fnt = font("Medium" if low else "Regular", round(18 * k))
     head = font("Medium", round(18 * k))
-    a, b = "ถัดไป  ", "คิวว่าง · กด ➕ เพิ่มเพลง"
-    b = b.replace("➕ ", "+ ")  # Kanit has no emoji
-    x = _row_x(g, d.textlength(a, font=head) + d.textlength(b, font=fnt))
-    d.text((x, g.next_y), a, font=head, fill=_mix(accent, bg, 0.35))
-    d.text((x + d.textlength(a, font=head), g.next_y), b, font=fnt,
-           fill=_readable((150, 150, 165), bg, 3.0))
+    if low:
+        a, b = "ใกล้หมดแล้ว  ", "เพลงจะหยุดในไม่ถึง 1 นาที · กด + เพิ่มเพลง"
+        head_fill, fill = LOW_AMBER, _readable(LOW_AMBER, bg, 4.0)
+    else:
+        a, b = "ถัดไป  ", "คิวว่าง · กด + เพิ่มเพลง"  # "+" not ➕: Kanit has no emoji
+        head_fill, fill = _mix(accent, bg, 0.35), _readable((150, 150, 165), bg, 3.0)
+    width = d.textlength(a, font=head)
+    b = _fit(d, b, fnt, g.max_w - width)
+    x = _row_x(g, width + d.textlength(b, font=fnt))
+    d.text((x, g.next_y), a, font=head, fill=head_fill)
+    d.text((x + width, g.next_y), b, font=fnt, fill=fill)
 
 
 def _right_time(track: Track, st: CardState) -> str:
@@ -1656,6 +1663,7 @@ def _encode(canvas: Image.Image) -> bytes:
 PAUSED_COLOR = 0.12  # colour left in a paused card
 NIGHT_SHADE = (4, 4, 14, 80)
 HOT_TINT = (255, 120, 30, 34)  # warm light over the card during the most replayed part
+LOW_AMBER = (255, 184, 64)  # "queue almost empty" warning on the up-next row
 
 
 def _grey(c) -> tuple[int, int, int]:
@@ -1805,9 +1813,15 @@ def render(track: Track, art_bytes: Optional[bytes], st: CardState = CardState()
         d = _Draw(canvas)
         fnt = font("Regular", round(18 * g.s))
         y = g.chips_y
-        for line in _wrap(d, st.reason or "ไม่ทราบสาเหตุ", fnt, g.max_w, 3):
+        cause, _, fix = (st.reason or "ไม่ทราบสาเหตุ").partition("\n")
+        for line in _wrap(d, cause, fnt, g.max_w, 2 if fix else 3):
             _text(d, g, y, line, fnt, (255, 190, 190))
             y += 26 * g.s
+        if fix:  # what to do about it, a little apart
+            y += 8 * g.s
+            for line in _wrap(d, "วิธีแก้: " + fix, fnt, g.max_w, 2):
+                _text(d, g, y, line, fnt, (235, 235, 245))
+                y += 26 * g.s
         return _encode(canvas)
 
     if st.mode == "loading":
@@ -1848,7 +1862,7 @@ def render(track: Track, art_bytes: Optional[bytes], st: CardState = CardState()
             _draw_next(canvas, g, st.next_title, accent, bg, _open_art(arts[0] if arts else None),
                        more, max(st.queue_len - 1 - len(more), 0))
         elif st.loop == "off":
-            _draw_empty_queue(canvas, g, accent, bg)
+            _draw_empty_queue(canvas, g, accent, bg, st.queue_low)
     elif _badges(st, track):  # share card keeps the badges
         _draw_chips(canvas, g, _badges(st, track))
 

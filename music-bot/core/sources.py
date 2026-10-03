@@ -247,6 +247,51 @@ def _extract_plain(query: str, opts: dict) -> dict:
         raise RuntimeError(f"{type(exc).__name__}: {exc}") from None
 
 
+# yt-dlp error text -> (what happened, how to fix it), checked in order
+ERROR_HINTS = (
+    (r"not a bot", "YouTube ขอให้ยืนยันว่าไม่ใช่บอท",
+     "เจ้าของบอทใส่ cookies ของบัญชี YouTube (YTDLP_COOKIES) แล้วลองใหม่"),
+    (r"confirm your age|age.restrict|inappropriate for some users",
+     "คลิปนี้จำกัดอายุ ต้องล็อกอินถึงดูได้",
+     "เจ้าของบอทใส่ cookies ของบัญชี YouTube ที่ยืนยันอายุแล้ว (YTDLP_COOKIES)"),
+    (r"members.only|join this channel", "คลิปนี้ดูได้เฉพาะสมาชิกช่อง",
+     "ใช้ /search หาเวอร์ชันอื่นของเพลงนี้"),
+    (r"country|geo.?restrict|not made this video available in your",
+     "คลิปนี้ถูกบล็อกในประเทศที่บอทอยู่", "ใช้ /search หาเวอร์ชันอื่นของเพลงนี้"),
+    (r"private video", "คลิปนี้ตั้งเป็นส่วนตัว", "ขอลิงก์ที่เปิดสาธารณะ หรือใช้ /search"),
+    (r"copyright", "คลิปนี้ถูกลบเพราะลิขสิทธิ์", "ใช้ /search หาเวอร์ชันอื่นของเพลงนี้"),
+    (r"premiere|live event will begin|this live event", "คลิปนี้ยังไม่เริ่มฉาย",
+     "รอให้เริ่มฉายแล้วค่อยเปิดใหม่"),
+    (r"video unavailable|has been removed|account .*terminated|does not exist|"
+     r"no longer available|HTTP Error 404", "คลิปนี้ถูกลบหรือไม่มีแล้ว",
+     "ใช้ /search หาเวอร์ชันอื่นของเพลงนี้"),
+    (r"HTTP Error 429|too many requests|rate.limit",
+     "YouTube จำกัดการใช้งานบอทชั่วคราว", "รอสักครู่แล้วลองใหม่"),
+    (r"HTTP Error 403|forbidden", "YouTube ไม่ยอมให้บอทโหลดคลิปนี้",
+     "ลองใหม่อีกครั้ง ถ้ายังไม่ได้ให้เจ้าของบอทอัปเดต yt-dlp"),
+    (r"unsupported url", "ลิงก์นี้ไม่ใช่ลิงก์ที่บอทเปิดได้",
+     "ใช้ลิงก์ YouTube, SoundCloud หรือ Spotify หรือพิมพ์ชื่อเพลง"),
+    (r"requested format|no video formats|signature|nsig|player response",
+     "YouTube เปลี่ยนระบบ บอทอ่านคลิปนี้ไม่ได้",
+     "เจ้าของบอทอัปเดต yt-dlp (pip install -U yt-dlp)"),
+    (r"timeout|timed out|connection|network|name resolution|temporary failure",
+     "เน็ตของบอทมีปัญหาตอนโหลดเพลง", "ลองใหม่อีกครั้ง"),
+    (r"^no result", "ไม่พบเพลงนี้", "ลองพิมพ์ชื่อเพลงกับชื่อศิลปินให้ชัดขึ้น"),
+)
+
+
+def explain_error(raw: str) -> tuple[str, str]:
+    """A yt-dlp error in plain words plus what to do about it. Unknown errors come back as
+    they are, without the "ERROR: [youtube] id:" prefix, and with no fix."""
+    text = (raw or "").strip()
+    for pattern, cause, fix in ERROR_HINTS:
+        if re.search(pattern, text, re.I):
+            return cause, fix
+    text = re.sub(r"^(?:\w*Error:\s*)?(?:ERROR:\s*)?(?:\[[^\]]+\]\s*)?(?:[\w-]{6,}:\s*)?", "",
+                  text)
+    return (text or "ไม่ทราบสาเหตุ"), ""
+
+
 def _ready() -> bool:
     return True
 
