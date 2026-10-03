@@ -382,6 +382,8 @@ def _wrap(draw: ImageDraw.ImageDraw, text: str, fnt, max_w: float, lines: int) -
     return out
 
 
+TITLE_BIG = 56        # wide card: a short title is drawn this big
+TITLE_BIG_FILL = 0.7  # ...when it takes at most this much of the line (a long one stays smaller)
 TITLE_ROOM = 58  # px under a wide card's title: the artist line and a gap before the chips
 TITLE_MIN = 24
 
@@ -390,9 +392,11 @@ def _fit_title(draw, text: str, size: int, max_w: float, lines: int = 2, size2: 
     """Largest of size, size-4, size-8 that fits without '…'. Returns (font, lines).
     size2: a title that does not fit on one line at `size` uses two lines from size2 down."""
     if size2:
-        fnt = font("Bold", size)
-        if draw.textlength(text, font=fnt) <= max_w:
-            return fnt, [text]
+        # a short title gets bigger letters instead of empty space (wide card)
+        for s in (TITLE_BIG, TITLE_BIG - 6, size):
+            fnt = font("Bold", s)
+            if draw.textlength(text, font=fnt) <= max_w * (TITLE_BIG_FILL if s > size else 1):
+                return fnt, [text]
         size = size2
     for s in (size, size - 4, size - 8):
         fnt = font("Bold", s)
@@ -1458,8 +1462,11 @@ def _encode_eq(canvas: Image.Image, spot, vinyl: Optional["Vinyl"] = None,
             frame.alpha_composite(strips[i % len(strips)], (vinyl.x, vinyl.y))
         frames.append(frame.convert("RGB"))
     out = io.BytesIO()
+    # One full picture, then only what changed: without kmin/kmax libwebp stores several
+    # full key frames, about 2.5x the bytes and 3x the time for the same animation.
     frames[0].save(out, "WEBP", save_all=True, append_images=frames[1:], duration=EQ_FRAME_MS,
-                   loop=0, quality=82, method=2, minimize_size=False)  # 2: ~40% less CPU
+                   loop=0, quality=WEBP_QUALITY, method=2, minimize_size=False,
+                   kmin=EQ_FRAMES, kmax=EQ_FRAMES + 1)
     return out.getvalue()
 
 
@@ -1587,11 +1594,16 @@ def _spinner(canvas: Image.Image, cx: float, cy: float, r: float):
     canvas.alpha_composite(layer)
 
 
+WEBP_QUALITY = 78
+
+
 def _encode(canvas: Image.Image) -> bytes:
     out = io.BytesIO()
     img = canvas.convert("RGB")
     if EXT == "webp":
-        img.save(out, "WEBP", quality=82, method=2)  # 2: much less CPU, about the same size
+        # 78: ~15% smaller than 82, no visible difference at the size Discord shows it.
+        # method 2: much less CPU than the default, about the same size.
+        img.save(out, "WEBP", quality=WEBP_QUALITY, method=2)
     else:
         img.save(out, "JPEG", quality=88, optimize=True)
     return out.getvalue()

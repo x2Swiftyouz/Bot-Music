@@ -176,6 +176,8 @@ def status_line(p: "GuildPlayer") -> str:
         parts.append("🎚 ความดังเท่ากัน")
     if p.stay_247:
         parts.append("🌙 24/7")
+    if getattr(p, "autoplay", False):  # its switch is inside ⚙️ now
+        parts.append("📻 Autoplay")
     if getattr(p, "fair_queue", False) and p.queue:
         parts.append("⚖️ ผลัดกันเล่น")
     if p.skip_votes:
@@ -1055,18 +1057,22 @@ async def act_hot(inter):
                note=lambda p, msg: None if msg else "🔥 {who} ข้ามไปท่อนฮิต")
 
 
+async def _toggle_autoplay(inter, p: "GuildPlayer") -> str:
+    on = p.toggle_autoplay()
+    p.note(f"📻 {_who(inter)} {'เปิด' if on else 'ปิด'} autoplay")
+    await inter.client.db.set_setting(inter.guild_id, "autoplay", int(on))
+    await audit_inter(inter, "autoplay", "on" if on else "off")
+    return ("📻 เปิด autoplay: คิวหมดแล้วบอทจะเล่นเพลงคล้ายกันต่อเอง" if on
+            else "📻 ปิด autoplay แล้ว")
+
+
 async def act_autoplay(inter):
     try:
         p = control(inter)
     except UserError as exc:
         return await inter.response.send_message(str(exc), ephemeral=True)
-    on = p.toggle_autoplay()
-    p.note(f"📻 {_who(inter)} {'เปิด' if on else 'ปิด'} autoplay")
-    await inter.client.db.set_setting(inter.guild_id, "autoplay", int(on))
-    await inter.response.send_message(
-        "📻 เปิด autoplay: คิวหมดแล้วบอทจะเล่นเพลงคล้ายกันต่อเอง" if on else "📻 ปิด autoplay แล้ว",
-        ephemeral=True)
-    await audit_inter(inter, "autoplay", "on" if on else "off")
+    text = await _toggle_autoplay(inter, p)
+    await inter.response.send_message(text, ephemeral=True)
     await p.update_panel()
 
 
@@ -1103,17 +1109,34 @@ def _quick_options(p: "GuildPlayer") -> list[discord.SelectOption]:
     return out
 
 
+QUICK_ADMIN_ONLY = "⚙️ ตั้งค่าเซิร์ฟเวอร์ใช้ได้เฉพาะแอดมิน (สิทธิ์จัดการเซิร์ฟเวอร์)"
+
+
 async def act_quick(inter, key: str):
-    """Apply one quick setting: the same change as the matching /settings command."""
-    from cogs.settings import LAYOUT_NAMES, THEME_NAMES
-    from core.card import LAYOUTS, THEMES
+    """A quick setting picked from an old panel's menu (panels now open SettingsView)."""
     try:
         p = control(inter)
     except UserError as exc:
         return await inter.response.send_message(str(exc), ephemeral=True)
     if not p.is_admin(inter.user):
-        return await inter.response.send_message(
-            "⚙️ ตั้งค่าด่วนใช้ได้เฉพาะแอดมิน (สิทธิ์จัดการเซิร์ฟเวอร์)", ephemeral=True)
+        return await inter.response.send_message(QUICK_ADMIN_ONLY, ephemeral=True)
+    text, repost = await _apply_quick(inter, p, key)
+    await inter.response.send_message(f"⚙️ {text}", ephemeral=True)
+    await _after_quick(p, repost)
+
+
+async def _after_quick(p: "GuildPlayer", repost: bool):
+    if repost and p.current:
+        await p.send_panel()  # compact changes the panel's whole shape
+    else:
+        await p.update_panel()
+
+
+async def _apply_quick(inter, p: "GuildPlayer", key: str) -> tuple[str, bool]:
+    """Apply one quick setting: the same change as the matching /settings command.
+    Returns (what changed, whether the panel must be posted again)."""
+    from cogs.settings import LAYOUT_NAMES, THEME_NAMES
+    from core.card import LAYOUTS, THEMES
     db = inter.client.db
     repost = False
     if key in QUICK_TOGGLES:
@@ -1137,14 +1160,67 @@ async def act_quick(inter, key: str):
         await db.set_setting(inter.guild_id, "card_layout", p.card_layout)
         text = f"รูปทรงการ์ด: {LAYOUT_NAMES.get(p.card_layout, p.card_layout)}"
     else:
-        return await inter.response.send_message("ไม่รู้จักตัวเลือกนี้", ephemeral=True)
+        return "ไม่รู้จักตัวเลือกนี้", False
     p.note(f"⚙️ {_who(inter)} ตั้ง {text}")
-    await inter.response.send_message(f"⚙️ {text}", ephemeral=True)
     await audit_inter(inter, "quick setting", text)
-    if repost and p.current:
-        await p.send_panel()  # compact changes the panel's whole shape
-    else:
+    return text, repost
+
+
+SETTINGS_TEXT = ("### ⚙️ ตั้งค่า\n📻 **Autoplay** ทุกคนกดได้: คิวหมดแล้วเล่นเพลงคล้ายกันต่อเอง\n"
+                 "-# ตั้งค่าเซิร์ฟเวอร์ในเมนูด้านล่างใช้ได้เฉพาะแอดมิน")
+
+
+class SettingsView(discord.ui.View):
+    """⚙️ on the panel: settings only the presser sees. Autoplay for everyone, the server
+    settings for admins (the menu is greyed out for others)."""
+
+    def __init__(self, p: "GuildPlayer", user):
+        super().__init__(timeout=180)
+        self.p = p
+        on = bool(getattr(p, "autoplay", False))
+        self.autoplay_btn.label = f"Autoplay: {'เปิด' if on else 'ปิด'}"
+        self.autoplay_btn.style = (discord.ButtonStyle.primary if on
+                                   else discord.ButtonStyle.secondary)
+        self.quick.options = _quick_options(p)
+        if not p.is_admin(user):
+            self.quick.disabled = True
+            self.quick.placeholder = "⚙️ ตั้งค่าเซิร์ฟเวอร์ (เฉพาะแอดมิน)"
+
+    async def _refresh(self, inter, text: str):
+        await inter.response.edit_message(content=f"{SETTINGS_TEXT}\n\n✅ {text}",
+                                          view=SettingsView(self.p, inter.user))
+
+    @discord.ui.button(emoji="📻", label="Autoplay", row=0)
+    async def autoplay_btn(self, inter: discord.Interaction, _):
+        try:
+            p = control(inter)
+        except UserError as exc:
+            return await inter.response.send_message(str(exc), ephemeral=True)
+        text = await _toggle_autoplay(inter, p)
+        await self._refresh(inter, text)
         await p.update_panel()
+
+    @discord.ui.select(placeholder="⚙️ ตั้งค่าเซิร์ฟเวอร์ (แอดมิน)", row=1,
+                       options=[discord.SelectOption(label="-", value="-")])
+    async def quick(self, inter: discord.Interaction, select: discord.ui.Select):
+        try:
+            p = control(inter)
+        except UserError as exc:
+            return await inter.response.send_message(str(exc), ephemeral=True)
+        if not p.is_admin(inter.user):
+            return await inter.response.send_message(QUICK_ADMIN_ONLY, ephemeral=True)
+        text, repost = await _apply_quick(inter, p, select.values[0])
+        await self._refresh(inter, text)
+        await _after_quick(p, repost)
+
+
+async def act_settings(inter):
+    try:
+        p = control(inter)
+    except UserError as exc:
+        return await inter.response.send_message(str(exc), ephemeral=True)
+    await inter.response.send_message(SETTINGS_TEXT, view=SettingsView(p, inter.user),
+                                      ephemeral=True)
 
 
 VOLUME_BACK = "back"  # volume menu: return to the volume before the last change
@@ -1274,8 +1350,6 @@ class PanelView(discord.ui.View):
             self.loop.style = discord.ButtonStyle.primary
             self.loop.emoji = "🔂" if p.loop_mode == "track" else "🔁"
         self.hot_btn.disabled = hot_position(p) is None
-        if getattr(p, "autoplay", False):
-            self.autoplay_btn.style = discord.ButtonStyle.primary
         if hasattr(p, "stop_armed") and p.stop_armed():
             self.stop_btn.label = "กดอีกครั้งเพื่อหยุด"
         if p.volume <= 0:
@@ -1290,7 +1364,6 @@ class PanelView(discord.ui.View):
                 item.disabled = True
         elif p.loading:
             self.pause.disabled = True
-        self.quick_select.options = _quick_options(p)
         current = int(round(p.volume * 100))
         self.volume_select.placeholder = f"🔊 ระดับเสียง: {current}%"
         for opt in self.volume_select.options:
@@ -1361,10 +1434,10 @@ class PanelView(discord.ui.View):
     async def hot_btn(self, inter, _):
         await act_hot(inter)
 
-    @discord.ui.button(emoji="📻", style=discord.ButtonStyle.secondary, custom_id="mb:autoplay",
+    @discord.ui.button(emoji="⚙️", style=discord.ButtonStyle.secondary, custom_id="mb:settings",
                        row=2)
-    async def autoplay_btn(self, inter, _):
-        await act_autoplay(inter)
+    async def settings_btn(self, inter, _):
+        await act_settings(inter)
 
     @discord.ui.button(emoji="🎙", style=discord.ButtonStyle.secondary,
                        custom_id="mb:livelyrics", row=2)
@@ -1376,18 +1449,23 @@ class PanelView(discord.ui.View):
     async def volume_select(self, inter, select: discord.ui.Select):
         await act_volume(inter, select.values[0])
 
-    @discord.ui.select(placeholder="⚙️ ตั้งค่าด่วน (แอดมิน)", custom_id="mb:quick", row=4,
-                       options=[discord.SelectOption(label=label, value=key, emoji=emoji)
-                                for key, emoji, label in QUICK_SETTINGS])
-    async def quick_select(self, inter, select: discord.ui.Select):
-        await act_quick(inter, select.values[0])
 
 
 class LegacyVolumeView(discord.ui.View):
-    """Panels sent before 🔇 replaced the -10 / +10 buttons keep working until refreshed."""
+    """Controls of older panels keep working until the panel is refreshed: -10 / +10 (before
+    🔇), 📻 (before ⚙️ took its place) and the quick settings menu that sat under it."""
 
     def __init__(self):
         super().__init__(timeout=None)
+
+    @discord.ui.button(emoji="📻", custom_id="mb:autoplay")
+    async def autoplay_btn(self, inter, _):
+        await act_autoplay(inter)
+
+    @discord.ui.select(custom_id="mb:quick", options=[
+        discord.SelectOption(label=label, value=key) for key, _, label in QUICK_SETTINGS])
+    async def quick_select(self, inter, select: discord.ui.Select):
+        await act_quick(inter, select.values[0])
 
     @discord.ui.button(emoji="🔉", label="-10", custom_id="mb:voldown")
     async def vol_down(self, inter, _):
