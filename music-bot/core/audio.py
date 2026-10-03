@@ -3,6 +3,7 @@
 import array
 import sys
 import threading
+import time
 from typing import Callable, Optional
 
 import discord
@@ -13,10 +14,43 @@ except ImportError:  # pragma: no cover
     audioop = None
 
 FRAME_MS = 20
+LATE = 0.06  # seconds behind schedule before the sender stops trying to catch up
+
+
+def keep_pace(source) -> None:
+    """Stop discord.py from "catching up" after a late frame.
+
+    Its sender keeps a fixed 20 ms schedule from when the song started. If a frame comes
+    late (FFmpeg still starting, a busy moment), it sends the missed frames back to back,
+    which plays as a short fast-forward. Moving the schedule to now turns that into a
+    tiny pause instead. Called from read(), in the sender thread.
+    """
+    player = getattr(source, "_mb_player", None)
+    if player is None:
+        return
+    try:
+        due = player._start + player.DELAY * player.loops
+        now = time.perf_counter()
+        if now - due > LATE:
+            player._start = now - player.DELAY * player.loops
+            source.late_frames = getattr(source, "late_frames", 0) + 1
+    except AttributeError:  # another discord.py version: leave its timing alone
+        source._mb_player = None
+
+
+RAMP_STEPS = 8  # a fade changes gain in 8 small steps per 20 ms frame (2.5 ms each)
 
 
 def _scale_ramp(data: bytes, start: float, end: float) -> bytes:
-    """Scale s16le stereo PCM with a linear gain ramp across the frame."""
+    """Scale s16le stereo PCM with a gain ramp across the frame. With audioop the frame is
+    scaled in short steps (fast, in C); without it, sample by sample in Python."""
+    if audioop:
+        step = len(data) // RAMP_STEPS // 4 * 4 or len(data)
+        parts = []
+        for k, i in enumerate(range(0, len(data), step)):
+            g = start + (end - start) * (k + 0.5) / RAMP_STEPS
+            parts.append(audioop.mul(data[i:i + step], 2, g))
+        return b"".join(parts)
     samples = array.array("h")
     samples.frombytes(data)
     if sys.byteorder != "little":
@@ -168,6 +202,7 @@ class SmoothVolume(discord.AudioSource):
         out = _scale(data, end) if start == end else _scale_ramp(data, start, end)
         if self._tail:
             out = self._mix_tail(out)
+        keep_pace(self)
         if callback:
             try:
                 callback()
@@ -187,6 +222,7 @@ class CountingSource(discord.AudioSource):
         data = self.original.read()
         if data:
             self.frames += 1
+            keep_pace(self)
         return data
 
     def is_opus(self) -> bool:

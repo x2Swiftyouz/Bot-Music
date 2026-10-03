@@ -35,6 +35,7 @@ DEFAULT_VOLUME = _int("DEFAULT_VOLUME", 50)
 # yt-dlp
 AUTOCOMPLETE = _bool("AUTOCOMPLETE", True)       # live search while typing /play
 YTDL_TIMEOUT = _int("YTDL_TIMEOUT", 45)       # seconds per extraction
+YTDL_PROCESSES = _int("YTDL_PROCESSES", 2)    # yt-dlp worker processes (0 = threads, old way)
 YTDL_DEBUG = _bool("YTDL_DEBUG", False)         # verbose yt-dlp log
 YTDLP_COOKIES = os.getenv("YTDLP_COOKIES") or None
 

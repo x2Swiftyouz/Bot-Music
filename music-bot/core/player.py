@@ -804,6 +804,7 @@ class GuildPlayer:
 
         try:
             vc.play(source, after=after)
+            source._mb_player = getattr(vc, "_player", None)  # see audio.keep_pace
         except Exception as exc:
             self.close_source(source)
             try:

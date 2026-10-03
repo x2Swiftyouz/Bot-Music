@@ -19,7 +19,7 @@ if config.UI_STYLE == "groove":
     look.install()  # before anything sends a message
 
 from core.checks import UserError  # noqa: E402
-from core import card, clean, clock, lyrics, ratelimit, updater
+from core import card, clean, clock, lyrics, ratelimit, sources, updater
 from core.db import Database
 from core.player import GuildPlayer
 from core.sources import spotify
@@ -72,6 +72,7 @@ class MusicBot(commands.Bot):
         log.info("Synced %d slash commands", len(synced))
         await self._start_health()
         ratelimit.install()
+        sources.warm_workers()
         self.restart_requested = False
         self._updater = asyncio.create_task(updater.loop(self))
         try:
@@ -161,6 +162,7 @@ class MusicBot(commands.Bot):
         if self._health_runner:
             await self._health_runner.cleanup()
         await spotify.close()
+        sources.close_workers()
         await lyrics.close()
         await card.close()
         await super().close()

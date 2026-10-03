@@ -220,6 +220,7 @@ python bot.py
 | `YTDLP_COOKIES` | — | ไฟล์ cookies.txt เมื่อ YouTube ขอยืนยันว่าไม่ใช่บอท |
 | `AUTOCOMPLETE` | `true` | ค้นหาสดระหว่างพิมพ์ `/play` |
 | `YTDL_TIMEOUT` | `45` | เวลาสูงสุดต่อการค้นหนึ่งครั้ง (วินาที) |
+| `YTDL_PROCESSES` | `2` | ค้นเพลงด้วย yt-dlp ใน process แยก เสียงไม่กระตุกตอนมีคนเพิ่มเพลง (`0` = ใช้ thread แบบเดิม) |
 | `YTDL_DEBUG` | `false` | log ของ yt-dlp แบบละเอียด |
 | `FFMPEG_PATH` | อัตโนมัติ | path ของ ffmpeg |
 | `STREAM_MODE` | `auto` | `direct` = FFmpeg ดึงเสียงเอง, `pipe` = Python ดึงแล้วส่งให้ FFmpeg |
@@ -360,6 +361,7 @@ cogs/
 | อาการ | วิธีแก้ |
 |---|---|
 | `Sign in to confirm you're not a bot` | export cookies.txt จากเบราว์เซอร์ แล้วตั้ง `YTDLP_COOKIES=data/cookies.txt` |
+| เพลงกระตุกหรือเร็วผิดปกติช่วงสั้นๆ | ปกติแก้ให้อัตโนมัติแล้ว (yt-dlp แยก process และไม่เร่งเพลงตามหลังเมื่อเฟรมช้า) ถ้ายังเป็น ตรวจ CPU ของเครื่องและลอง `CARD_ANIMATION=start` |
 | เล่นเพลงไม่ได้ทุกเพลง | อัปเดต yt-dlp (`pip install -U "yt-dlp[default]"`) และตรวจว่ามี Deno |
 | `PrivilegedIntentsRequired` | เปิด Message Content Intent ใน Developer Portal หรือตั้ง `MESSAGE_CONTENT=false` |
 | slash command ไม่ขึ้น | การ sync ทั่วโลกใช้เวลาสักพัก ลองปิดแล้วเปิด Discord ใหม่ |

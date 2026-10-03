@@ -6,7 +6,10 @@ import functools
 import logging
 import re
 import time
-from concurrent.futures import ThreadPoolExecutor
+import multiprocessing
+import pickle
+from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
+from concurrent.futures.process import BrokenProcessPool
 from dataclasses import asdict, dataclass, field
 from typing import Optional
 from urllib.parse import parse_qs, urlparse
@@ -199,10 +202,77 @@ def _extract(query: str, opts: dict) -> dict:
         return ydl.extract_info(query, download=False)
 
 
+def _extract_plain(query: str, opts: dict) -> dict:
+    """In a worker process: the result (and any error) must survive pickling back to the
+    bot. yt-dlp's errors hold unpicklable objects, so they are re-raised with only their
+    message, which is all the bot reads from them."""
+    try:
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            return ydl.sanitize_info(ydl.extract_info(query, download=False))
+    except yt_dlp.utils.DownloadError as exc:
+        raise yt_dlp.utils.DownloadError(str(exc)) from None
+    except Exception as exc:
+        raise RuntimeError(f"{type(exc).__name__}: {exc}") from None
+
+
+def _ready() -> bool:
+    return True
+
+
 # Separate thread pools: autocomplete spam must never block playback lookups.
 PLAY_POOL = ThreadPoolExecutor(max_workers=4, thread_name_prefix="ytdl-play")
 SEARCH_POOL = ThreadPoolExecutor(max_workers=2, thread_name_prefix="ytdl-search")
 _search_inflight = 0
+
+# yt-dlp is pure Python and busy for a second or more per lookup. In a thread it competes
+# with the audio sender for Python's lock (GIL) and the music stutters or races ahead when
+# someone adds a song. In worker processes it cannot. Falls back to threads if processes
+# do not work on this system.
+_procs: dict[str, Optional[ProcessPoolExecutor]] = {}
+_procs_broken = False
+
+
+def _process_pool(kind: str) -> Optional[ProcessPoolExecutor]:
+    if _procs_broken or config.YTDL_PROCESSES <= 0:
+        return None
+    if kind not in _procs:
+        workers = config.YTDL_PROCESSES if kind == "play" else 1
+        _procs[kind] = ProcessPoolExecutor(
+            max_workers=workers, mp_context=multiprocessing.get_context("spawn"))
+    return _procs[kind]
+
+
+def warm_workers():
+    """Start the worker processes now (importing yt-dlp takes a moment), not on the first
+    song request."""
+    for kind in ("play", "search"):
+        pool = _process_pool(kind)
+        if pool:
+            pool.submit(_ready)
+
+
+def close_workers():
+    for pool in _procs.values():
+        if pool:
+            pool.shutdown(wait=False, cancel_futures=True)
+    _procs.clear()
+
+
+async def _in_worker(kind: str, query: str, opts: dict, threads: ThreadPoolExecutor) -> dict:
+    """Run a lookup in a worker process (or a thread when processes are unavailable)."""
+    global _procs_broken
+    loop = asyncio.get_running_loop()
+    pool = _process_pool(kind)
+    if pool is not None:
+        try:
+            return await loop.run_in_executor(pool, functools.partial(_extract_plain, query, opts))
+        except (BrokenProcessPool, pickle.PicklingError) as exc:
+            # yt-dlp's own errors pass through above; these mean processes do not work here
+            log.warning("yt-dlp worker process failed (%s: %s), using threads instead",
+                        type(exc).__name__, exc)
+            _procs_broken = True
+            close_workers()
+    return await loop.run_in_executor(threads, functools.partial(_extract, query, opts))
 
 
 def _dec_inflight():
@@ -215,10 +285,10 @@ def search_busy() -> bool:
 
 
 async def run_ytdl(query: str, opts: dict, pool: ThreadPoolExecutor = PLAY_POOL) -> dict:
-    loop = asyncio.get_running_loop()
-    fut = loop.run_in_executor(pool, functools.partial(_extract, query, opts))
+    kind = "search" if pool is SEARCH_POOL else "play"
     try:
-        return await asyncio.wait_for(fut, timeout=config.YTDL_TIMEOUT)
+        return await asyncio.wait_for(_in_worker(kind, query, opts, pool),
+                                      timeout=config.YTDL_TIMEOUT)
     except asyncio.TimeoutError:
         raise RuntimeError(f"yt-dlp timeout after {config.YTDL_TIMEOUT}s") from None
 
@@ -311,9 +381,8 @@ async def search_choices(query: str, limit: int = 5, autocomplete: bool = False)
         info = await run_ytdl(f"ytsearch{limit}:{query}", YTDL_FLAT)
     else:
         _search_inflight += 1
-        loop = asyncio.get_running_loop()
-        fut = loop.run_in_executor(SEARCH_POOL, functools.partial(
-            _extract, f"ytsearch{limit}:{query}", YTDL_FLAT))
+        fut = asyncio.ensure_future(_in_worker("search", f"ytsearch{limit}:{query}", YTDL_FLAT,
+                                               SEARCH_POOL))
         fut.add_done_callback(lambda _f: _dec_inflight())
         info = await asyncio.shield(fut)
     out = []
