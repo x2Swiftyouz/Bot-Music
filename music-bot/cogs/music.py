@@ -16,7 +16,7 @@ from core.sources import (Track, fmt_time, parse_time, search_busy, search_choic
                           search_tracks)
 from core import clean, lyrics
 from core.ui import (LOOP_ICON, LyricsView, QueueView, SearchView, build_added_embed,
-                     build_now_playing)
+                     build_now_playing, who_label)
 
 log = logging.getLogger("musicbot.music")
 
@@ -96,9 +96,8 @@ class Music(commands.Cog):
         added = player.add(tracks, front=front)
         if added == 0:
             raise UserError(f"คิวเต็ม (สูงสุด {config.MAX_QUEUE})")
-        who = member.display_name if len(member.display_name) <= 20 else member.display_name[:19] + "…"
         what = tracks[0].name[:40] if added == 1 else f"{added} เพลง"
-        player.note(f"➕ {who} เพิ่ม {what}")
+        player.note(f"➕ {who_label(member)} เพิ่ม {what}")
         return build_added_embed(player, tracks[:added], index, label)
 
     # ----------------------------------------------------------- commands

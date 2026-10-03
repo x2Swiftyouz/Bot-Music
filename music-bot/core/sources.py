@@ -122,8 +122,11 @@ class Track:
     _protocol: str = field(default="", repr=False, compare=False)
     _heatmap: tuple = field(default=(), repr=False, compare=False)   # YouTube "most replayed"
     _chapters: tuple = field(default=(), repr=False, compare=False)  # ((start, title), ...)
+    _views: int = field(default=0, repr=False, compare=False)        # view count, 0 = unknown
+    _year: str = field(default="", repr=False, compare=False)        # release / upload year
 
-    RUNTIME = ("_stream", "_stream_at", "_headers", "_protocol", "_heatmap", "_chapters")
+    RUNTIME = ("_stream", "_stream_at", "_headers", "_protocol", "_heatmap", "_chapters",
+               "_views", "_year")
 
     def fmt_duration(self) -> str:
         return fmt_time(self.duration) if self.duration else "LIVE/?"
@@ -266,6 +269,26 @@ async def search_tracks(query: str, requester_id: int, requester_name: str) -> l
     return tracks
 
 
+AUTOPLAY_NAME = "📻 Autoplay"
+
+
+async def related_tracks(track: Track, limit: int = 10) -> list[Track]:
+    """Songs like this one, for autoplay: YouTube's own "Mix" for the video, or a search
+    by artist and title when there is no YouTube video to start from."""
+    vid = track.video_id
+    if vid:
+        query = f"https://www.youtube.com/watch?v={vid}&list=RD{vid}"
+    else:
+        query = f"ytsearch{limit}:{track.artist} {clean_title(track.title)}".strip()
+    info = await run_ytdl(query, {**YTDL_FLAT, "playlistend": limit + 1})
+    out = []
+    for e in info.get("entries") or []:
+        t = _entry_to_track(e, 0, AUTOPLAY_NAME) if e else None
+        if t and t.video_id != vid and t.url != track.url:
+            out.append(t)
+    return out[:limit]
+
+
 async def search_choices(query: str, limit: int = 5, autocomplete: bool = False) -> list[Track]:
     """Search results for /search (play pool) or autocomplete (own small pool)."""
     global _search_inflight
@@ -373,6 +396,9 @@ async def resolve_stream(track: Track) -> str:
     track._heatmap = tuple(float(h.get("value") or 0) for h in info.get("heatmap") or ())
     track._chapters = tuple((float(c.get("start_time") or 0), str(c.get("title") or ""))
                             for c in info.get("chapters") or () if c.get("title"))
+    track._views = int(info.get("view_count") or 0)
+    year = info.get("release_year") or str(info.get("upload_date") or "")[:4]
+    track._year = str(year) if str(year).isdigit() else ""
 
     return track._stream
 

@@ -125,6 +125,8 @@ class CardState:
     reason: str = ""
     avatar: str = ""            # requester's avatar URL (drawn before "ขอโดย")
     animate: bool = False       # play mode: moving equalizer (animated WebP)
+    views: int = 0              # view count chip (0 = none)
+    year: str = ""              # release year chip
 
 
 # -------------------------------------------------------------------- text
@@ -332,6 +334,13 @@ def _icon(d: ImageDraw.ImageDraw, kind: str, x: float, cy: float, color, muted=F
     elif kind == "hot":
         d.ellipse(box(2, -2, 14, 8), fill=color)
         d.polygon([P(2, 3), P(9, -9), P(14, 3)], fill=color)
+    elif kind == "play":
+        d.polygon([P(1, -7), P(1, 7), P(14, 0)], fill=color)
+    elif kind == "cal":
+        d.rounded_rectangle(box(0, -6, 15, 8), 2, outline=color, width=w2)
+        d.line(box(0, -2, 15, -2), fill=color, width=w2)
+        d.line(box(4, -9, 4, -5), fill=color, width=w2)
+        d.line(box(11, -9, 11, -5), fill=color, width=w2)
     elif kind == "cake":
         d.rounded_rectangle(box(0, 0, 16, 7), 2, fill=color)
         d.rectangle(box(7, -6, 9, 0), fill=color)
@@ -796,6 +805,26 @@ def _volume_chip(volume: int, soft=(255, 255, 255, 38), text=(240, 240, 245)) ->
     return ("vol", f"{volume}%", fill, color, volume == 0)
 
 
+def short_count(n: int) -> str:
+    """1234 -> 1.2K, 3400000 -> 3.4M, 1200000000 -> 1.2B."""
+    for size, unit in ((1_000_000_000, "B"), (1_000_000, "M"), (1_000, "K")):
+        if n >= size:
+            v = n / size
+            text = f"{v:.1f}".rstrip("0").rstrip(".") if v < 10 else f"{v:.0f}"
+            return text + unit
+    return str(n)
+
+
+def _info_chips(st: CardState, fill, text) -> list[tuple]:
+    """Views and year: nice to know, so they are the first to go when space runs out."""
+    out = []
+    if st.views:
+        out.append(("play", short_count(st.views), fill, text, False))
+    if st.year:
+        out.append(("cal", st.year, fill, text, False))
+    return out
+
+
 def _badges(st: CardState) -> list[tuple]:
     out = []
     if st.hot >= HOT_THRESHOLD:
@@ -921,6 +950,20 @@ def _draw_next(canvas: Image.Image, g: Geo, title: str, accent, bg,
     d.text((tx + thumb_w + gap, g.next_y), text, font=body, fill=_readable((215, 215, 225), bg))
 
 
+def _draw_empty_queue(canvas: Image.Image, g: Geo, accent, bg):
+    """Fills the 'up next' row when nothing is queued: how to add a song."""
+    d = ImageDraw.Draw(canvas)
+    k = g.s
+    fnt = font("Regular", round(18 * k))
+    head = font("Medium", round(18 * k))
+    a, b = "ถัดไป  ", "คิวว่าง · กด ➕ เพิ่มเพลง"
+    b = b.replace("➕ ", "+ ")  # Kanit has no emoji
+    x = _row_x(g, d.textlength(a, font=head) + d.textlength(b, font=fnt))
+    d.text((x, g.next_y), a, font=head, fill=_mix(accent, bg, 0.35))
+    d.text((x + d.textlength(a, font=head), g.next_y), b, font=fnt,
+           fill=_readable((150, 150, 165), bg, 3.0))
+
+
 def _right_time(track: Track, st: CardState) -> str:
     if st.time_mode == "remaining":
         return "-" + fmt_time(track.duration - st.position)
@@ -1035,9 +1078,11 @@ def render(track: Track, art_bytes: Optional[bytes], st: CardState = CardState()
             chips.append(("loop", "เพลง" if st.loop == "track" else "คิว", soft, chip_text, False))
         if st.queue_len:
             chips.append(("queue", f"{st.queue_len}", soft, chip_text, False))
-        _draw_chips(canvas, g, chips + _badges(st))
+        _draw_chips(canvas, g, chips + _badges(st) + _info_chips(st, soft, chip_text))
         if st.next_title:
             _draw_next(canvas, g, st.next_title, accent, bg, _open_art(next_art))
+        elif st.loop == "off":
+            _draw_empty_queue(canvas, g, accent, bg)
     elif _badges(st):  # share card keeps the badges
         _draw_chips(canvas, g, _badges(st))
 
@@ -1057,6 +1102,97 @@ def render(track: Track, art_bytes: Optional[bytes], st: CardState = CardState()
             return _encode_eq(canvas, eq_spot)
         _eq(canvas, eq_spot, EQ_STILL)
     return _encode(canvas)
+
+
+# --------------------------------------------------------------- quote card
+QUOTE_W, QUOTE_H = 1200, 630
+
+
+def _split_middle(d, text: str, fnt, max_w: float) -> Optional[list[str]]:
+    """Two lines split at the space nearest the middle (Thai lyrics put spaces between
+    phrases), or None when no split fits."""
+    spaces = [i for i, ch in enumerate(text) if ch == " "]
+    for i in sorted(spaces, key=lambda i: abs(i - len(text) / 2)):
+        a, b = text[:i].strip(), text[i + 1:].strip()
+        if a and b and max(d.textlength(a, font=fnt), d.textlength(b, font=fnt)) <= max_w:
+            return [a, b]
+    return None
+
+
+def _quote_lines(d, text: list[str], max_w: float, height: float) -> tuple[list[str], int]:
+    """Biggest size where every lyric line fits: whole, else split between phrases,
+    else wrapped by characters as a last resort."""
+    for size in (60, 54, 48, 42):
+        fnt = font("Bold", size)
+        out = []
+        for ln in text:
+            if d.textlength(ln, font=fnt) <= max_w:
+                out.append(ln)
+            elif (pair := _split_middle(d, ln, fnt, max_w)) is not None:
+                out += pair
+            else:
+                break
+        else:
+            if len(out) * int(size * 1.45) <= height:
+                return out, size
+    fnt = font("Bold", 36)
+    out = []
+    for ln in text:
+        out += _wrap(d, ln, fnt, max_w, 3)
+    return out[:5], 36
+
+
+def render_quote(lines: list[str], track: Track, art_bytes: Optional[bytes]) -> bytes:
+    """A lyric line (or two) as a shareable card: big text over the blurred cover,
+    with the cover, title and artist at the bottom."""
+    w, h = QUOTE_W, QUOTE_H
+    art = _open_art(art_bytes)
+    a1, a2 = _palette(art)
+    if art is not None:
+        canvas = ImageOps.fit(art.convert("RGB"), (w, h)).filter(
+            ImageFilter.GaussianBlur(36)).convert("RGBA")
+        canvas.alpha_composite(Image.new("RGBA", (w, h), (10, 10, 16, 150)))
+    else:
+        canvas = Image.new("RGBA", (w, h), (*_mix((14, 14, 20), a1, 0.2), 255))
+    canvas.alpha_composite(_gradient((w, h), a1, a2, 70, 10))
+    bg = tuple(int(v) for v in ImageStat.Stat(canvas.convert("RGB")).mean)
+    accent = _readable(a1, bg)
+    d = ImageDraw.Draw(canvas)
+
+    # the lyric: as big as fits in four lines
+    text = [ln.strip() or "♪" for ln in lines if ln is not None][:2] or ["♪"]
+    max_w, top, bottom = w - 240, 90, h - 190
+    wrapped, size = _quote_lines(d, text, max_w, bottom - top)
+    fnt, lh = font("Bold", size), int(size * 1.45)
+    y = top + (bottom - top - len(wrapped) * lh) / 2
+    d.text((100 - 8, y - size * 0.9), "“", font=font("Bold", size * 2), fill=accent)
+    for i, ln in enumerate(wrapped):
+        d.text((100 + 40, y + i * lh), ln, font=fnt, fill=WHITE)
+
+    # footer: cover, title, artist
+    s_ = 104
+    cover = _rounded(_cover(art, s_, a1), 14)
+    fy = h - 60 - s_
+    canvas.alpha_composite(cover, (100, fy))
+    d = ImageDraw.Draw(canvas)
+    tx = 100 + s_ + 24
+    title_f, artist_f = font("Bold", 32), font("Regular", 24)
+    d.text((tx, fy + 14), _fit(d, display_title(track), title_f, w - tx - 100), font=title_f,
+           fill=WHITE)
+    if track.artist:
+        d.text((tx, fy + 60), _fit(d, track.artist, artist_f, w - tx - 100), font=artist_f,
+               fill=_readable((200, 200, 212), bg))
+    d.line((100, fy - 28, w - 100, fy - 28), fill=(*_mix(accent, bg, 0.5), ), width=2)
+    return _encode(canvas)
+
+
+async def make_quote_card(lines: list[str], track: Track) -> Optional[bytes]:
+    try:
+        art = await fetch_track_art(track)
+        return await _run(lambda: render_quote(lines, track, art))
+    except Exception as exc:
+        log.warning("quote card failed: %s", exc)
+        return None
 
 
 # --------------------------------------------------------------- queue card

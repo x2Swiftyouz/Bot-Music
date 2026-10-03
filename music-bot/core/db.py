@@ -24,7 +24,8 @@ CREATE TABLE IF NOT EXISTS guild_settings (
     normalize INTEGER,
     request_channel INTEGER DEFAULT 0,
     request_message INTEGER DEFAULT 0,
-    auto_clean INTEGER
+    auto_clean INTEGER,
+    autoplay INTEGER DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS queue_state (
     guild_id INTEGER PRIMARY KEY,
@@ -69,14 +70,15 @@ CREATE TABLE IF NOT EXISTS birthdays (
 SETTING_KEYS = (
     "volume", "loop_mode", "stay_247",
     "vote_skip", "announce", "compact", "time_remaining", "card_theme", "card_layout",
-    "normalize", "request_channel", "request_message", "auto_clean",
+    "normalize", "request_channel", "request_message", "auto_clean", "autoplay",
 )
 
 # Columns added after the first release: (name, SQL type with default).
 MIGRATIONS = (("compact", "INTEGER DEFAULT 0"), ("time_remaining", "INTEGER DEFAULT 0"),
               ("card_theme", "TEXT DEFAULT 'blur'"), ("card_layout", "TEXT DEFAULT 'wide'"),
               ("normalize", "INTEGER"), ("request_channel", "INTEGER DEFAULT 0"),
-              ("request_message", "INTEGER DEFAULT 0"), ("auto_clean", "INTEGER"))
+              ("request_message", "INTEGER DEFAULT 0"), ("auto_clean", "INTEGER"),
+              ("autoplay", "INTEGER DEFAULT 0"))
 
 
 class Database:
@@ -114,6 +116,7 @@ class Database:
             "normalize": int(config.NORMALIZE),  # NULL in the table = follow .env
             "request_channel": 0, "request_message": 0,
             "auto_clean": int(config.AUTO_CLEAN),  # NULL in the table = follow .env
+            "autoplay": 0,
         }
         if row:
             for k in SETTING_KEYS:

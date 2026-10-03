@@ -154,12 +154,13 @@ def status_line(p: "GuildPlayer") -> str:
         parts.append("🔂 วนเพลงนี้")
     elif p.loop_mode == "queue":
         parts.append("🔁 วนทั้งคิว")
-    vol = int(round(p.volume * 100))
-    parts.append(f"{'🔇' if vol == 0 else '🔊'} {vol}%")
+    if p.compact:  # the full panel shows these on its buttons and volume menu already
+        vol = int(round(p.volume * 100))
+        parts.append(f"{'🔇' if vol == 0 else '🔊'} {vol}%")
+        if p.live_lyrics:
+            parts.append("🎙 เนื้อสด")
     if listeners := len(p.humans_in_channel()):
         parts.append(f"🎧 {listeners} คนฟังอยู่")
-    if p.live_lyrics:
-        parts.append("🎙 เนื้อสด")
     if p.normalize:
         parts.append("🎚 ความดังเท่ากัน")
     if p.stay_247:
@@ -170,6 +171,7 @@ def status_line(p: "GuildPlayer") -> str:
 
 
 LYRICS_LEAD = 1.0  # seconds: the panel edit reaches people a little late
+LYRIC_DOTS = 5    # progress through the current live lyric line
 
 
 def live_lyrics_text(p: "GuildPlayer") -> Optional[str]:
@@ -185,7 +187,17 @@ def live_lyrics_text(p: "GuildPlayer") -> Optional[str]:
     lines = []
     if idx >= 1:
         lines.append(f"-# {lyr.synced[idx - 1][1] or '♪'}")
-    lines.append(f"**{lyr.synced[idx][1] or '♪'}**" if idx >= 0 else "-# ♪ …")
+    if idx >= 0:
+        line = f"**{lyr.synced[idx][1] or '♪'}**"
+        if idx + 1 < len(lyr.synced):  # how far into this line we are
+            start, end = lyr.synced[idx][0], lyr.synced[idx + 1][0]
+            if end - start >= 2:  # short lines change before the panel can show it
+                done = min(max((p.position + LYRICS_LEAD - start) / (end - start), 0), 1)
+                filled = min(int(done * LYRIC_DOTS), LYRIC_DOTS - 1) + 1
+                line += "  " + "▰" * filled + "▱" * (LYRIC_DOTS - filled)
+        lines.append(line)
+    else:
+        lines.append("-# ♪ …")
     if idx + 1 < len(lyr.synced):
         lines.append(lyr.synced[idx + 1][1] or "♪")
     return "\n".join(lines)[:1000]
@@ -589,6 +601,20 @@ class LyricsView(PagesView):
         self.lyr, self.p, self.url = lyr, p, url
         if not (lyr.synced and p and url):
             self.remove_item(self.now_btn)
+        if not (lyr.plain or lyr.synced):
+            self.remove_item(self.quote_btn)
+
+    @discord.ui.button(emoji="🖼", label="การ์ดเนื้อเพลง", style=discord.ButtonStyle.secondary)
+    async def quote_btn(self, inter: discord.Interaction, _):
+        p = self.p
+        playing = bool(p and p.current and p.current.url == self.url)
+        track = p.current if playing else Track(title=self.lyr.title, url=self.url or "",
+                                                artist=self.lyr.artist)
+        position = p.position if playing and self.lyr.synced else None
+        page = self.pages[self.index].description or ""
+        view = QuoteView(self.lyr, track, inter.user.id, position, page)
+        await inter.response.send_message(
+            "🖼 เลือก 1–2 บรรทัดที่จะทำเป็นการ์ด แล้วบอทจะส่งลงห้องนี้", view=view, ephemeral=True)
 
     @discord.ui.button(emoji="📍", label="ท่อนปัจจุบัน", style=discord.ButtonStyle.secondary)
     async def now_btn(self, inter: discord.Interaction, _):
@@ -596,6 +622,56 @@ class LyricsView(PagesView):
         if not p or not p.current or p.current.url != self.url:
             return await inter.response.send_message("เพลงเปลี่ยนแล้ว", ephemeral=True)
         await inter.response.edit_message(embed=build_lyrics_now(self.lyr, p.position), view=self)
+
+
+class QuoteView(discord.ui.View):
+    """Pick one or two lyric lines; the bot posts them as an image card in the channel."""
+
+    def __init__(self, lyr: Lyrics, track: Track, author_id: int,
+                 position: Optional[float], page_text: str):
+        super().__init__(timeout=180)
+        self.track, self.author_id = track, author_id
+        options, self.lines = [], []
+        if position is not None and lyr.synced:  # around the line playing now
+            now = lyr.line_at(position + LYRICS_LEAD)
+            start = max(now - 4, 0)
+            for i in range(start, min(start + 25, len(lyr.synced))):
+                at, text = lyr.synced[i]
+                if text.strip():
+                    self.lines.append(text.strip())
+                    options.append(discord.SelectOption(
+                        label=text.strip()[:100], description=fmt_time(at),
+                        value=str(len(self.lines) - 1), default=i == now))
+        else:  # the lyrics page being read
+            for text in page_text.splitlines():
+                if text.strip() and len(self.lines) < 25:
+                    self.lines.append(text.strip())
+                    options.append(discord.SelectOption(label=text.strip()[:100],
+                                                        value=str(len(self.lines) - 1)))
+        self.pick.options = options or [discord.SelectOption(label="♪", value="-1")]
+        self.pick.max_values = min(2, len(self.pick.options))
+
+    async def interaction_check(self, inter: discord.Interaction) -> bool:
+        return inter.user.id == self.author_id
+
+    @discord.ui.select(placeholder="เลือกบรรทัด (ได้ 2 บรรทัดติดกัน)", min_values=1)
+    async def pick(self, inter: discord.Interaction, select: discord.ui.Select):
+        idx = sorted(int(v) for v in select.values if int(v) >= 0)
+        lines = [self.lines[i] for i in idx] or ["♪"]
+        await inter.response.edit_message(content="🖼 กำลังทำการ์ด…", view=None)
+        from core.card import EXT, make_quote_card
+        data = await make_quote_card(lines, self.track)
+        if not data:
+            return await inter.edit_original_response(content="ทำการ์ดไม่สำเร็จ ลองใหม่อีกครั้ง")
+        file = discord.File(io.BytesIO(data), filename=f"lyrics.{EXT}",
+                            description=" / ".join(lines)[:1000])
+        try:
+            title = _plain(self.track.name, 80)
+            await inter.channel.send(f"🎤 {who_label(inter.user)} แชร์ท่อนจาก **{title}**",
+                                     file=file, allowed_mentions=discord.AllowedMentions.none())
+        except discord.HTTPException:
+            return await inter.edit_original_response(content="ส่งการ์ดในห้องนี้ไม่ได้")
+        await inter.edit_original_response(content="✅ ส่งการ์ดเนื้อเพลงแล้ว")
 
 
 def build_added_embed(p: "GuildPlayer", tracks: list[Track], index: int,
@@ -658,9 +734,17 @@ class SearchView(discord.ui.View):
 # ---------------------------------------------------------- panel actions
 # Shared by the full panel and the compact panel. Return text = ephemeral reply.
 
-def _who(inter: discord.Interaction) -> str:
-    name = getattr(inter.user, "display_name", None) or getattr(inter.user, "name", "?")
+def who_label(user) -> str:
+    """How a person is named on the panel's status line: a mention pill in the Groove
+    look (it renders there and never pings: panels send no mentions), else the name."""
+    if config.UI_STYLE == "groove" and getattr(user, "id", None):
+        return f"<@{user.id}>"
+    name = getattr(user, "display_name", None) or getattr(user, "name", "?")
     return name if len(name) <= 20 else name[:19] + "…"
+
+
+def _who(inter: discord.Interaction) -> str:
+    return who_label(inter.user)
 
 
 async def _act(inter: discord.Interaction, action: Callable[["GuildPlayer"], Optional[str]],
@@ -747,11 +831,64 @@ async def act_live_lyrics(inter):
                note=lambda p, _: "🎙 {who} เปิดเนื้อสด" if p.live_lyrics else "🎙 {who} ปิดเนื้อสด")
 
 
+HOT_LEAD = 3  # seconds before the most replayed point, so the hit part starts cleanly
+
+
+def hot_position(p: "GuildPlayer") -> Optional[float]:
+    """Where 🔥 jumps: just before the part people replay most (None = no data)."""
+    from core.card import heat_peak
+    t = p.current
+    if not t or not t.duration or getattr(p, "loading", False):
+        return None
+    peak = heat_peak(tuple(t._heatmap or ()))
+    if peak is None:
+        return None
+    return max(peak * t.duration - HOT_LEAD, 0.0)
+
+
+async def act_hot(inter):
+    def run(p: "GuildPlayer") -> Optional[str]:
+        target = hot_position(p)
+        if target is None:
+            return "เพลงนี้ไม่มีข้อมูลท่อนฮิต"
+        p.restart_at(target)
+        return None
+    await _act(inter, run, "hot part",
+               note=lambda p, msg: None if msg else "🔥 {who} ข้ามไปท่อนฮิต")
+
+
+async def act_autoplay(inter):
+    try:
+        p = control(inter)
+    except UserError as exc:
+        return await inter.response.send_message(str(exc), ephemeral=True)
+    on = p.toggle_autoplay()
+    p.note(f"📻 {_who(inter)} {'เปิด' if on else 'ปิด'} autoplay")
+    await inter.client.db.set_setting(inter.guild_id, "autoplay", int(on))
+    await inter.response.send_message(
+        "📻 เปิด autoplay: คิวหมดแล้วบอทจะเล่นเพลงคล้ายกันต่อเอง" if on else "📻 ปิด autoplay แล้ว",
+        ephemeral=True)
+    await audit_inter(inter, "autoplay", "on" if on else "off")
+    await p.update_panel()
+
+
+STOP_CONFIRM_SECONDS = 5
+
+
 async def act_stop(inter):
     try:
         p = control(inter)
     except UserError as exc:
         return await inter.response.send_message(str(exc), ephemeral=True)
+    listeners = len(p.humans_in_channel())
+    if listeners > 1 and not p.stop_armed():
+        # others are listening: ⏹ is red and close to other buttons, so ask once more
+        p.arm_stop(STOP_CONFIRM_SECONDS)
+        await inter.response.send_message(
+            f"⏹ มีคนฟังอยู่ {listeners} คน กด ⏹ อีกครั้งภายใน {STOP_CONFIRM_SECONDS} วินาที"
+            " เพื่อหยุดและล้างคิว", ephemeral=True)
+        await p.update_panel()
+        return
     await inter.response.defer()
     await audit_inter(inter, "stop")
     await p.destroy()
@@ -839,6 +976,11 @@ class PanelView(discord.ui.View):
         if p.loop_mode != "off":
             self.loop.style = discord.ButtonStyle.primary
             self.loop.emoji = "🔂" if p.loop_mode == "track" else "🔁"
+        self.hot_btn.disabled = hot_position(p) is None
+        if getattr(p, "autoplay", False):
+            self.autoplay_btn.style = discord.ButtonStyle.primary
+        if hasattr(p, "stop_armed") and p.stop_armed():
+            self.stop_btn.label = "กดอีกครั้งเพื่อหยุด"
         if p.volume <= 0:
             self.mute_btn.emoji, self.mute_btn.label = "🔊", "เปิดเสียง"
             self.mute_btn.style = discord.ButtonStyle.primary
@@ -911,6 +1053,15 @@ class PanelView(discord.ui.View):
                        custom_id="mb:mute", row=2)
     async def mute_btn(self, inter, _):
         await act_mute(inter)
+
+    @discord.ui.button(emoji="🔥", style=discord.ButtonStyle.secondary, custom_id="mb:hot", row=2)
+    async def hot_btn(self, inter, _):
+        await act_hot(inter)
+
+    @discord.ui.button(emoji="📻", style=discord.ButtonStyle.secondary, custom_id="mb:autoplay",
+                       row=2)
+    async def autoplay_btn(self, inter, _):
+        await act_autoplay(inter)
 
     @discord.ui.button(emoji="🎙", label="เนื้อสด", style=discord.ButtonStyle.secondary,
                        custom_id="mb:livelyrics", row=2)

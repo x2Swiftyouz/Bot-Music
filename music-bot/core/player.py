@@ -122,6 +122,7 @@ def clock_after(seconds: float) -> str:
 
 
 TIME_MODES = ("length", "remaining", "clock")
+NO_PINGS = discord.AllowedMentions.none()  # the panel names people (status line), never pings
 
 
 def _media_urls(components) -> list[str]:
@@ -172,6 +173,8 @@ class GuildPlayer:
         self.card_layout = settings.get("card_layout") or "wide"
         self.normalize = bool(settings.get("normalize"))
         self.auto_clean = bool(settings.get("auto_clean"))
+        self.autoplay = bool(settings.get("autoplay"))  # 📻 similar songs when the queue ends
+        self._last_played: Optional[Track] = None
         self.request_channel_id = settings.get("request_channel") or 0
         self.request_message_id = settings.get("request_message") or 0
         self.live_lyrics = False      # karaoke line on the panel
@@ -503,6 +506,40 @@ class GuildPlayer:
         self.set_volume(getattr(self, "_unmute_to", 0) or config.DEFAULT_VOLUME)
         return False
 
+    async def _autoplay_next(self) -> bool:
+        """Queue one song like the last one (not one played recently). True when queued."""
+        seed = self._last_played
+        if not seed:
+            return False
+        from core.sources import related_tracks
+        try:
+            found = await related_tracks(seed)
+        except Exception as exc:
+            log.info("[%s] autoplay lookup failed: %s", self.guild.id, exc)
+            return False
+        recent = {t.url for t in self.history} | {seed.url}
+        recent |= {r.get("url") for r in self.session[-50:]}
+        for t in found:
+            if t.url not in recent:
+                me = getattr(getattr(self.guild, "me", None), "id", 0) or 0
+                t.requester_id, t.requester_name = me, "📻 Autoplay"
+                self.queue.append(t)
+                return True
+        return False
+
+    def toggle_autoplay(self) -> bool:
+        self.autoplay = not self.autoplay
+        if self.autoplay:
+            self._wake.set()  # idle with an empty queue: start right away
+        return self.autoplay
+
+    def arm_stop(self, seconds: float):
+        """First ⏹ press while others listen: a second press within `seconds` stops."""
+        self._stop_until = time.monotonic() + seconds
+
+    def stop_armed(self) -> bool:
+        return time.monotonic() < getattr(self, "_stop_until", 0)
+
     # ------------------------------------------------------------- notes
     NOTE_SECONDS = 12
 
@@ -617,6 +654,8 @@ class GuildPlayer:
     async def _play_next(self):
         self._next.clear()
 
+        if not self.queue and not self._hold and self.autoplay and await self._autoplay_next():
+            pass  # a similar song was queued: play it below
         if not self.queue or self._hold:
             self.current = None
             self.loading = False
@@ -753,6 +792,7 @@ class GuildPlayer:
             return
         self._record(track)
         self.history.append(track)
+        self._last_played = track  # autoplay looks for songs like this one
         if self.loop_mode == "track" and not self._skipped:
             self.queue.appendleft(track)
         elif self.loop_mode == "queue":
@@ -918,7 +958,16 @@ class GuildPlayer:
             hot=self.track_plays, birthday=self.requester_birthday, blink=self._blink,
             theme=self.card_theme, layout="mini" if self.compact else self.card_layout,
             mode=mode, reason=reason, avatar=self.avatar_url(t),
-            animate=config.CARD_ANIMATED and mode == "play" and not self.is_paused)
+            animate=self._animate(mode), views=t._views if t else 0, year=t._year if t else "")
+
+    def _animate(self, mode: str) -> bool:
+        """Moving equalizer: always, never, or (default) only on a song's first card, so
+        Discord's "GIF" label does not stay on the panel."""
+        if mode != "play" or self.is_paused or config.CARD_ANIMATION == "off":
+            return False
+        if config.CARD_ANIMATION == "always":
+            return True
+        return self.position < config.CARD_ANIMATION_SECONDS
 
     def avatar_url(self, track: Optional[Track]) -> str:
         """Small avatar of whoever requested the track ("" when unknown)."""
@@ -1085,12 +1134,13 @@ class GuildPlayer:
         if self.request_message_id:
             msg = channel.get_partial_message(self.request_message_id)
             try:
-                await msg.edit(content=None, embed=embed, view=view,
+                await msg.edit(content=None, embed=embed, view=view, allowed_mentions=NO_PINGS,
                                attachments=[card] if card else [])
                 return msg
             except discord.NotFound:
                 pass
-        msg = await channel.send(embed=embed, view=view, **({"file": card} if card else {}))
+        msg = await channel.send(embed=embed, view=view, allowed_mentions=NO_PINGS,
+                                 **({"file": card} if card else {}))
         clock.observe(msg)
         self.request_message_id = msg.id
         await self.bot.db.set_setting(self.guild.id, "request_message", msg.id)
@@ -1125,7 +1175,8 @@ class GuildPlayer:
             self._panel_sig = None
             # the panel itself is never auto-deleted while it is live
             self.panel_message = await self.send(embed=embed, view=self.make_view(),
-                                                 delete_after=None, **kwargs)
+                                                 delete_after=None, allowed_mentions=NO_PINGS,
+                                                 **kwargs)
             clock.observe(self.panel_message)
         except discord.HTTPException as exc:
             log.debug("send_panel failed: %s", exc)
@@ -1165,7 +1216,8 @@ class GuildPlayer:
                     if not self.panel_message:
                         return
                     try:
-                        msg = await self.panel_message.edit(embed=embed, view=view, **kwargs)
+                        msg = await self.panel_message.edit(embed=embed, view=view,
+                                                            allowed_mentions=NO_PINGS, **kwargs)
                     except Exception:
                         # the new card never arrived: keep pointing at the one that did
                         self.card_name, self._card_key, self._card_at = before
