@@ -1065,6 +1065,29 @@ async def act_autoplay(inter):
     await p.update_panel()
 
 
+VOLUME_BACK = "back"  # volume menu: return to the volume before the last change
+
+
+async def act_volume(inter, value: str):
+    def run(p: "GuildPlayer") -> Optional[str]:
+        if value == VOLUME_BACK:
+            if p.prev_volume is None:
+                return "ไม่มีความดังก่อนหน้านี้"
+            p.set_volume(p.prev_volume)
+        else:
+            p.set_volume(int(value))
+        return None
+
+    def note(p, msg):
+        if msg:
+            return None
+        now = int(round(p.volume * 100))
+        if value == VOLUME_BACK:
+            return f"↩️ {{who}} กลับไปความดังเดิม {now}%"
+        return f"🔊 {{who}} ปรับเสียงเป็น {now}%"
+    await _act(inter, run, f"volume {value}", note=note)
+
+
 STOP_CONFIRM_SECONDS = 5
 
 
@@ -1191,6 +1214,11 @@ class PanelView(discord.ui.View):
             opt.default = int(opt.value) == current
             if opt.default:  # the closed menu shows this label
                 opt.label = f"ระดับเสียง: {current}% · {VOLUME_NAMES[current][0]}"
+        prev = getattr(p, "prev_volume", None)
+        if prev is not None and prev != current:  # undo a change in one pick
+            self.volume_select.options = [discord.SelectOption(
+                label=f"↩ กลับไป {prev}%", value=VOLUME_BACK, emoji="↩️",
+                description="ความดังก่อนหน้านี้")] + list(self.volume_select.options)
 
     # row 0: transport, row 1: queue and extras, row 2: add / mute / live lyrics,
     # row 3: volume. Icons only: every button the same width, rows the same length.
@@ -1263,9 +1291,7 @@ class PanelView(discord.ui.View):
     @discord.ui.select(placeholder="🔊 ระดับเสียง", custom_id="mb:volpreset", row=3,
                        options=[_volume_option(v) for v in VOLUME_PRESETS])
     async def volume_select(self, inter, select: discord.ui.Select):
-        value = int(select.values[0])
-        await _act(inter, lambda p: (p.set_volume(value), None)[1], f"volume {value}",
-                   note=f"🔊 {{who}} ปรับเสียงเป็น {value}%")
+        await act_volume(inter, select.values[0])
 
 
 class LegacyVolumeView(discord.ui.View):

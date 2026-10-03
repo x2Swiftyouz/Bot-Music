@@ -28,7 +28,7 @@ from PIL import (Image, ImageChops, ImageDraw, ImageEnhance, ImageFilter, ImageF
                  ImageStat, features)
 
 import config
-from core.sources import SOURCE_COLORS, Track, detect_source, fmt_time, split_feat
+from core.sources import SOURCE_COLORS, Track, clean_artist, detect_source, fmt_time, split_feat
 
 log = logging.getLogger("musicbot.card")
 
@@ -381,6 +381,10 @@ def _wrap(draw: ImageDraw.ImageDraw, text: str, fnt, max_w: float, lines: int) -
     return out
 
 
+TITLE_ROOM = 58  # px under a wide card's title: the artist line and a gap before the chips
+TITLE_MIN = 24
+
+
 def _fit_title(draw, text: str, size: int, max_w: float, lines: int = 2, size2: int = 0):
     """Largest of size, size-4, size-8 that fits without '…'. Returns (font, lines).
     size2: a title that does not fit on one line at `size` uses two lines from size2 down."""
@@ -447,8 +451,10 @@ def _title_parts(track: Track) -> tuple[str, str, str]:
     """(song, artists, featured) for the card: 'HK & GH - Lost or Love FT. A & B' with
     channel 'HK' -> ('Lost or Love', 'HK & GH', 'A & B'). 'Song - Artist' works too."""
     title, feat = split_feat(track.name)
-    artist = (track.artist or "").strip()
-    for sep in (" - ", " – ", " — "):
+    artist = clean_artist((track.artist or "").strip())
+    # "แต่งงานกันนะ-Rapper Tery": a bare "-" counts too, but only when one side names
+    # the artist (so "Spider-Man" stays whole)
+    for sep in (" - ", " – ", " — ", "-", "–"):
         left, found, right = title.partition(sep)
         left, right = left.strip(), right.strip()
         if not (found and left and right and artist):
@@ -787,13 +793,18 @@ def _cover(art: Optional[Image.Image], size, accent) -> Image.Image:
     return cover
 
 
-def _shadowed(canvas: Image.Image, img: Image.Image, x: int, y: int, radius: int = 24):
-    """Paste an RGBA image with a soft drop shadow."""
+def _shadow_of(img: Image.Image) -> Image.Image:
+    """The soft drop shadow of an RGBA image, 20 px larger on each side (paste at -20)."""
     w, h = img.size
     shadow = Image.new("RGBA", (w + 40, h + 40), (0, 0, 0, 0))
     alpha = img.getchannel("A").point(lambda a: 150 if a else 0)
     shadow.paste((0, 0, 0, 255), (20, 24), alpha)
-    canvas.alpha_composite(shadow.filter(ImageFilter.GaussianBlur(10)), (x - 20, y - 20))
+    return shadow.filter(ImageFilter.GaussianBlur(10))
+
+
+def _shadowed(canvas: Image.Image, img: Image.Image, x: int, y: int, radius: int = 24):
+    """Paste an RGBA image with a soft drop shadow."""
+    canvas.alpha_composite(_shadow_of(img), (x - 20, y - 20))
     canvas.alpha_composite(img, (x, y))
 
 
@@ -820,9 +831,76 @@ def _source_badge(img: Image.Image, x: float, y: float, track: Track):
 
 
 # ------------------------------------------------------------ art blocks
-def _art_plain(canvas, g: Geo, art, a1, track):
-    _paste_cover(canvas, _cover(art, g.art, a1), g.art_x, g.art_y)
+VINYL_PEEK = 30   # px of the record showing beside the cover
+VINYL_SIZE = 0.94  # of the cover
+
+
+def _vinyl(size: int, label, angle: float) -> Image.Image:
+    """A black record with grooves, a label in the cover's colour, and a light sheen at
+    angle (degrees). Turning the sheen frame by frame makes it spin."""
+    disc = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+    d = _Draw(disc)
+    r = size / 2
+    d.ellipse((0, 0, size - 1, size - 1), fill=(14, 14, 17, 255))
+    for i, rr in enumerate(range(int(r * 0.38), int(r * 0.97), 3)):
+        c = 30 + (7 if i % 4 == 0 else 0)
+        d.ellipse((r - rr, r - rr, r + rr, r + rr), outline=(c, c, c + 4, 255), width=1)
+    sheen = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+    sd = _Draw(sheen)
+    for a in (angle, angle + 180):
+        sd.pieslice((0, 0, size - 1, size - 1), a - 16, a + 16, fill=(255, 255, 255, 72))
+    sheen = sheen.filter(ImageFilter.GaussianBlur(size * 0.03))
+    sheen.putalpha(ImageChops.multiply(sheen.getchannel("A"), disc.getchannel("A")))
+    disc.alpha_composite(sheen)
+    lr = r * 0.33
+    d = _Draw(disc)
+    d.ellipse((r - lr, r - lr, r + lr, r + lr), fill=(*label, 255))
+    d.ellipse((r - 4, r - 4, r + 4, r + 4), fill=(14, 14, 17, 255))
+    return disc
+
+
+@dataclass
+class Vinyl:
+    """The part of the record beside the cover, one picture per animation frame."""
+    x: int
+    y: int
+    strips: list
+
+
+def _art_plain(canvas, g: Geo, art, a1, track) -> Optional[Vinyl]:
+    cover = _cover(art, g.art, a1)
+    vinyl = None
+    if config.CARD_VINYL and g is not MINI:
+        size = round(g.art * VINYL_SIZE)
+        x0 = g.art_x + g.art + VINYL_PEEK - size
+        y0 = round(g.art_y + (g.art - size) / 2)
+        label = _mix(a1, WHITE, 0.08)
+        discs = [_vinyl(size, label, i * 180 / EQ_FRAMES) for i in range(EQ_FRAMES)]
+        canvas.alpha_composite(discs[0], (x0, y0))
+        # frames redraw only the strip beside the cover, with the cover's shadow on it
+        sx = g.art_x + g.art
+        shadow = _shadow_of(_rounded(cover, 24))
+        strips = []
+        for disc in discs:
+            strip = disc.crop((sx - x0, 0, size, size))
+            sh = shadow.crop((sx - (g.art_x - 20), y0 - (g.art_y - 20),
+                              sx - (g.art_x - 20) + strip.width, y0 - (g.art_y - 20) + size))
+            sh.putalpha(ImageChops.multiply(sh.getchannel("A"), strip.getchannel("A")))
+            strip.alpha_composite(sh)
+            strips.append(strip)
+        vinyl = Vinyl(sx, y0, strips)
+    _paste_cover(canvas, cover, g.art_x, g.art_y)
     _source_badge(canvas, g.art_x + 12, g.art_y + g.art - 38, track)
+    return vinyl
+
+
+def _tint_strip(strip: Image.Image, rgba) -> Image.Image:
+    """A colour wash over the record strip only (night, hit part), not around it."""
+    wash = Image.new("RGBA", strip.size, rgba)
+    wash.putalpha(ImageChops.multiply(wash.getchannel("A"), strip.getchannel("A")))
+    out = strip.copy()
+    out.alpha_composite(wash)
+    return out
 
 
 def _art_neon(canvas, g: Geo, art, a1, track):
@@ -910,6 +988,7 @@ class Base:
     accent2: tuple
     bg: tuple
     text_bottom: int
+    vinyl: Optional[Vinyl] = None
 
 
 _base_cache: "OrderedDict[tuple, Base]" = OrderedDict()
@@ -966,13 +1045,16 @@ def _render_base(track: Track, art_bytes: Optional[bytes], g: Geo, theme: str,
         while len(_accents) > 200:
             _accents.popitem(last=False)
     canvas = _background(g, theme, art, a1, a2)
+    vinyl = None
     if g is MINI:
         _paste_cover(canvas, _cover(art, g.art, a1), g.art_x, g.art_y, radius=14)
     else:
-        ART_BLOCKS.get(theme, _art_plain)(canvas, g, art, a1, track)
+        vinyl = ART_BLOCKS.get(theme, _art_plain)(canvas, g, art, a1, track)
 
     if night:  # darker background and cover; the text drawn next stays bright
         canvas.alpha_composite(Image.new("RGBA", canvas.size, NIGHT_SHADE))
+        if vinyl:
+            vinyl.strips = [_tint_strip(st, NIGHT_SHADE) for st in vinyl.strips]
 
     # Text colours checked against the real background behind the text column.
     region = (0, g.label_y, g.w, g.h) if g.center else (g.x0, 0, g.w, g.h)
@@ -994,6 +1076,14 @@ def _render_base(track: Track, art_bytes: Optional[bytes], g: Geo, theme: str,
         title_font, lines = _fit_title(d, display_title(track), g.title_size, g.max_w,
                                        size2=g.title_size2)
         lh = int(title_font.size * 1.3)
+        size2 = g.title_size2
+        # wide: a two-line title must leave the artist line clear of the chips below it
+        while (size2 and len(lines) > 1 and size2 > TITLE_MIN
+               and g.title_y + len(lines) * lh + TITLE_ROOM > g.chips_y):
+            size2 -= 2
+            title_font, lines = _fit_title(d, display_title(track), g.title_size, g.max_w,
+                                           size2=size2)
+            lh = int(title_font.size * 1.3)
         y = g.title_y
         for line in lines:
             if theme == "neon":
@@ -1032,6 +1122,7 @@ def _render_base(track: Track, art_bytes: Optional[bytes], g: Geo, theme: str,
             d = _Draw(canvas)
             base = Base(canvas, accent, accent2, bg, y + 32)
 
+    base.vinyl = vinyl
     _base_cache[key] = base
     while len(_base_cache) > BASE_CACHE_SIZE:
         _base_cache.popitem(last=False)
@@ -1089,6 +1180,7 @@ def heat_peak(heat: tuple[float, ...]) -> Optional[float]:
     return (i + 0.5) / len(heat)
 
 
+WAVE_GLOW_ALPHA = 210  # the soft glow under played bars (non-neon themes)
 HOT_LEVEL = 0.85  # heatmap level (of the peak) that counts as the hit part
 HOT_BAR = (255, 140, 40)
 
@@ -1124,12 +1216,18 @@ def _draw_wave(canvas: Image.Image, g: Geo, track: Track, ratio: Optional[float]
         else:
             ld.rounded_rectangle(box, 2, fill=(*HOT_BAR, 120) if hot[i] else (255, 255, 255, 70))
     canvas.alpha_composite(layer)
-    if glow and lit:
-        gl = Image.new("RGBA", canvas.size, (0, 0, 0, 0))
+    if lit and (glow or (config.CARD_WAVE_GLOW and g is not MINI)):
+        # light from the played bars (neon: strong). Blurred in a strip, not the whole card.
+        pad = 16
+        box0 = (int(x0 - pad), int(g.wave_y - pad), int(x0 + total + pad),
+                int(g.wave_y + g.wave_h + pad))
+        gl = Image.new("RGBA", (box0[2] - box0[0], box0[3] - box0[1]), (0, 0, 0, 0))
         gd = _Draw(gl)
+        strength = 255 if glow else WAVE_GLOW_ALPHA
         for box, color in lit:
-            gd.rounded_rectangle(box, 2, fill=(*color, 255))
-        canvas.alpha_composite(gl.filter(ImageFilter.GaussianBlur(6)))
+            gd.rounded_rectangle((box[0] - box0[0], box[1] - box0[1] - 2, box[2] - box0[0] + 1,
+                                  box[3] - box0[1] + 2), 2, fill=(*color, strength))
+        canvas.alpha_composite(gl.filter(ImageFilter.GaussianBlur(6 if glow else 5)), box0[:2])
     d = _Draw(canvas)
     for box, color in lit:
         d.rounded_rectangle(box, 2, fill=color)
@@ -1324,12 +1422,20 @@ def _eq(canvas: Image.Image, spot, heights):
         d.rounded_rectangle((bx, cy + full / 2 - bh, bx + bw, cy + full / 2), max(k, 1), fill=color)
 
 
-def _encode_eq(canvas: Image.Image, spot) -> bytes:
-    """Animated WebP: only the equalizer changes between frames, so it stays small."""
+def _encode_eq(canvas: Image.Image, spot, vinyl: Optional["Vinyl"] = None,
+               tint=None) -> bytes:
+    """Animated WebP: only the equalizer (and the record's sheen) change between frames,
+    so it stays small. tint: a colour wash over the card (the hit part) to repeat on the
+    record strip."""
     frames = []
+    strips = vinyl.strips if vinyl else []
+    if tint and strips:
+        strips = [_tint_strip(st, tint) for st in strips]
     for i in range(EQ_FRAMES):
         frame = canvas.copy()
         _eq(frame, spot, _eq_frame(i))
+        if strips:
+            frame.alpha_composite(strips[i % len(strips)], (vinyl.x, vinyl.y))
         frames.append(frame.convert("RGB"))
     out = io.BytesIO()
     frames[0].save(out, "WEBP", save_all=True, append_images=frames[1:], duration=EQ_FRAME_MS,
@@ -1682,7 +1788,8 @@ def render(track: Track, art_bytes: Optional[bytes], st: CardState = CardState()
         _draw_times(canvas, g, fmt_time(st.position), _right_time(track, st),
                     middle="" if st.mode == "play" else chapter)
     if eq_spot and st.animate and ANIMATED:
-        return _encode_eq(canvas, eq_spot)
+        tint = HOT_TINT if st.mode == "play" and st.hot_part else None
+        return _encode_eq(canvas, eq_spot, base.vinyl, tint)
     if eq_spot and st.animate:  # no animation support: still bars
         _eq(canvas, eq_spot, EQ_STILL)
     return _encode(canvas)

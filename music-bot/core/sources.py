@@ -93,11 +93,37 @@ _TAG_WORDS = {
 }
 _BRACKETS = re.compile(r"\s*[(\[【「『〔]([^()\[\]【】「」『』〔〕]*)[)\]】」』〕]")
 _PIPE_TAIL = re.compile(r"\s*[|｜]\s*([^|｜]*)$")
+_DASH_TAIL = re.compile(r"\s+[-–—]\s+([^-–—]*)$")
 
 
 def _only_tags(text: str) -> bool:
     words = [w for w in re.split(r"[\s,.&+/:-]+", text.casefold()) if w]
     return bool(words) and all(w in _TAG_WORDS for w in words)
+
+
+# "(Cr.Beat by Mr.B Production)", "[Prod. by X]", "(Beat: X)": who made the beat, not the name
+_CREDIT = re.compile(r"^\s*(?:cr\b\.?|credits?\b|prod\b\.?|produced\b|beats?\s*(?:by\b|:)|mix(?:ed)?\s+by\b|"
+                     r"master(?:ed)?\s+by\b|arranged\b|instrumental\s+by\b)", re.I)
+
+
+def _drop_part(text: str) -> bool:
+    return _only_tags(text) or bool(_CREDIT.match(text))
+
+
+# Channel names: "Rapper Tery [Official]", "Bodyslam Official", "TaylorSwiftVEVO", "X - Topic"
+_CHANNEL_WORDS = {"official", "channel", "vevo", "topic", "music", "officialchannel"}
+_CHANNEL_TAIL = re.compile(r"(?:\s*[-–|]\s*topic|vevo|\s+official(?:\s+(?:channel|youtube))?|"
+                           r"\s+channel)\s*$", re.I)
+
+
+def clean_artist(name: str) -> str:
+    """'Rapper Tery [Official]' -> 'Rapper Tery', 'Bodyslam Official' -> 'Bodyslam'."""
+    out = _BRACKETS.sub(lambda m: "" if all(
+        w in _CHANNEL_WORDS for w in re.split(r"[\s.]+", m.group(1).casefold()) if w)
+        else m.group(0), name or "")
+    while (tail := _CHANNEL_TAIL.search(out)) and tail.start() > 0:
+        out = out[:tail.start()]
+    return re.sub(r"\s{2,}", " ", out).strip(" -–—|｜") or (name or "")
 
 
 # "(feat. X)", "[ft. X]", "(with X)" anywhere, or "ft. X" / "feat. X" at the end.
@@ -120,8 +146,10 @@ def split_feat(title: str) -> tuple[str, str]:
 
 def clean_title(title: str) -> str:
     """'Song (Official Music Video) [4K]' -> 'Song'. Keeps (Live), (Remix), (feat. X)..."""
-    out = _BRACKETS.sub(lambda m: "" if _only_tags(m.group(1)) else m.group(0), title)
-    while (tail := _PIPE_TAIL.search(out)) and _only_tags(tail.group(1)):
+    out = _BRACKETS.sub(lambda m: "" if _drop_part(m.group(1)) else m.group(0), title)
+    while (tail := _PIPE_TAIL.search(out)) and _drop_part(tail.group(1)):
+        out = out[:tail.start()]
+    while (tail := _DASH_TAIL.search(out)) and _only_tags(tail.group(1)):  # "Song - Official MV"
         out = out[:tail.start()]
     out = re.sub(r"\s{2,}", " ", out).strip(" -–—|｜")
     return out or title

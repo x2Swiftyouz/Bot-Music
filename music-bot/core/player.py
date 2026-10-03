@@ -229,6 +229,7 @@ class GuildPlayer:
         self.track_plays = 0          # plays of the current track in this server (hit badge)
         self.requester_birthday = False
         self.session: list[dict] = []  # finished tracks, for the recap card
+        self.prev_volume: Optional[int] = None  # volume before the last change
         self._run_mark = 0       # session index where the current queue run started
         self._recap_all = False  # the last queue-end recap covered the whole session
         self._end_recap: list[dict] = []  # plays shown on the next "queue ended" panel
@@ -698,6 +699,9 @@ class GuildPlayer:
         return loudness_gain(self.volume)
 
     def set_volume(self, percent: int):
+        before = int(round(self.volume * 100))
+        if before != max(0, min(percent, 150)):
+            self.prev_volume = before  # "↩ back to …" in the volume menu
         self.volume = max(0, min(percent, 150)) / 100
         src = self._smooth_source()
         if src:

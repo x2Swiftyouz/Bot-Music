@@ -69,6 +69,8 @@ LOG_FRESH = _bool("LOG_FRESH", True)              # start a new log file on ever
 CARD_SERVER_ICON = _bool("CARD_SERVER_ICON", True)  # server icon in the card's corner
 CARD_FONT_DOWNLOAD = _bool("CARD_FONT_DOWNLOAD", True)  # fetch CJK fonts on first use
 CARD_FULL_COVER = _bool("CARD_FULL_COVER", True)  # video thumbnails whole, blurred fill
+CARD_VINYL = _bool("CARD_VINYL", True)          # a record peeking out beside the cover
+CARD_WAVE_GLOW = _bool("CARD_WAVE_GLOW", True)  # soft glow under the played bars
 CARD_PROCESS = _bool("CARD_PROCESS", True)     # draw cards in a worker process (no stutter)
 YTDL_PROCESSES = _int("YTDL_PROCESSES", 2)    # yt-dlp worker processes (0 = threads, old way)
 YTDL_DEBUG = _bool("YTDL_DEBUG", False)         # verbose yt-dlp log
