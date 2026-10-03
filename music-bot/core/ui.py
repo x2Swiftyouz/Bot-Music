@@ -70,51 +70,57 @@ def _time_line(p: "GuildPlayer") -> str:
     return line
 
 
+def _link(t: Track) -> str:
+    name = _plain(t.name, 80)
+    return f"**[{name}]({t.url})**" if t.url.startswith("http") else f"**{name}**"
+
+
 def build_now_playing(p: "GuildPlayer", card: Optional[str] = None) -> discord.Embed:
-    """card: filename of the attached card image ("" = none, default: the panel's own)."""
+    """card: filename of the attached card image ("" = none, default: the panel's own).
+    With a card the text only adds what the picture cannot do: a clickable title and a
+    countdown that runs by itself. Everything else is already on the card."""
     t = p.current
     if not t:
         return build_idle_embed()
     card_name = (p.card_name if p.has_card else "") if card is None else card
     has_card = bool(card_name)
-    e = discord.Embed(
-        title=t.title[:250],
-        url=t.url if t.url.startswith("http") else None,
-        color=track_color(t),
-    )
-    if p.loading:
-        e.set_author(name="⏳ กำลังโหลด…")
-        if has_card:
-            e.set_image(url=f"attachment://{card_name}")
-        elif t.thumbnail:
-            e.set_thumbnail(url=t.thumbnail)
-        e.description = f"-# ขอโดย {t.requester_name or '-'}"
-        return e
-    state = "⏸ หยุดชั่วคราว" if p.is_paused else "▶️ กำลังเล่น"
-    artist = f"**{t.artist}**\n" if t.artist else ""
-    if p.compact:
-        timing = _countdown(p) if has_card else _time_line(p)
-        e.description = f"{artist}{timing}\n-# ขอโดย {t.requester_name or '-'}"
-        if p.queue:
-            e.description += f" · ถัดไป: {p.queue[0].title[:50]}"
-        e.set_footer(text=status_line(p))
+    e = discord.Embed(color=track_color(t))
+    if has_card:
+        e.set_image(url=f"attachment://{card_name}")
+        if p.loading:
+            e.description = f"{_link(t)} · ⏳ กำลังโหลด…"
+            return e
+        e.description = f"{_link(t)} · {_countdown(p)}"
+        if p.compact and p.queue:  # the mini card has no "up next" row
+            e.description += f"\n-# ถัดไป: {_plain(p.queue[0].name[:60])}"
         if karaoke := live_lyrics_text(p):
-            e.description += "\n" + karaoke
-        if has_card:  # slim mini card
-            e.set_image(url=f"attachment://{card_name}")
-        elif t.thumbnail:
-            e.set_thumbnail(url=t.thumbnail)
-        e.set_author(name=state)
+            if p.compact:
+                e.description += "\n" + karaoke
+            else:
+                e.add_field(name="🎙 เนื้อเพลงสด", value=karaoke, inline=False)
+        e.set_footer(text=status_line(p))
         return e
 
-    e.set_author(name=state)
-    if has_card:  # the card already shows artist, progress and badges
-        e.set_image(url=f"attachment://{card_name}")
-        e.description = _countdown(p)
-    else:
-        if t.thumbnail:
-            e.set_thumbnail(url=t.thumbnail)
-        e.description = artist + _time_line(p)
+    # no card: the text carries everything
+    e.title = t.name[:250]
+    e.url = t.url if t.url.startswith("http") else None
+    if t.thumbnail:
+        e.set_thumbnail(url=t.thumbnail)
+    if p.loading:
+        e.set_author(name="⏳ กำลังโหลด…")
+        e.description = f"-# ขอโดย {t.requester_name or '-'}"
+        return e
+    e.set_author(name="⏸ หยุดชั่วคราว" if p.is_paused else "▶️ กำลังเล่น")
+    artist = f"**{t.artist}**\n" if t.artist else ""
+    e.description = artist + _time_line(p)
+    if p.compact:
+        e.description += f"\n-# ขอโดย {t.requester_name or '-'}"
+        if p.queue:
+            e.description += f" · ถัดไป: {p.queue[0].name[:50]}"
+        if karaoke := live_lyrics_text(p):
+            e.description += "\n" + karaoke
+        e.set_footer(text=status_line(p))
+        return e
     e.add_field(name="ขอโดย", value=t.requester_name or "-", inline=True)
     if p.queue:
         nxt = p.queue[0]
@@ -122,7 +128,7 @@ def build_now_playing(p: "GuildPlayer", card: Optional[str] = None) -> discord.E
         tail = f" · รวม {fmt_time(remain)}" if remain else ""
         e.add_field(
             name=f"ถัดไป ({len(p.queue)} เพลงในคิว{tail})",
-            value=f"{nxt.title[:90]} `[{nxt.fmt_duration()}]`",
+            value=f"{nxt.name[:90]} `[{nxt.fmt_duration()}]`",
             inline=False,
         )
     if karaoke := live_lyrics_text(p):
@@ -142,6 +148,8 @@ def status_line(p: "GuildPlayer") -> str:
         parts.append("🔁 วนทั้งคิว")
     vol = int(round(p.volume * 100))
     parts.append(f"{'🔇' if vol == 0 else '🔊'} {vol}%")
+    if listeners := len(p.humans_in_channel()):
+        parts.append(f"🎧 {listeners} คนฟังอยู่")
     if p.live_lyrics:
         parts.append("🎙 เนื้อสด")
     if p.normalize:
@@ -227,7 +235,7 @@ def _plain(text: str, limit: int = 55) -> str:
 
 
 def queue_row(p: "GuildPlayer", pos: int, t: Track) -> str:
-    link = f"[{_plain(t.title)}]({t.url})" if t.url.startswith("http") else _plain(t.title)
+    link = f"[{_plain(t.name)}]({t.url})" if t.url.startswith("http") else _plain(t.name)
     sub = [t.artist] if t.artist else []
     sub.append(f"ขอโดย {t.requester_name or '-'}")
     eta = p.eta(pos - 1)
@@ -249,20 +257,20 @@ def build_queue_pages(p: "GuildPlayer", per_page: int = QUEUE_PER_PAGE,
         e = RowsEmbed(title=title[:256], color=SOURCE_COLORS["other"])
         if p.current:
             c = p.current
-            e.groove_head = (f"**กำลังเล่น:** [{_plain(c.title)}]({c.url}) "
+            e.groove_head = (f"**กำลังเล่น:** [{_plain(c.name)}]({c.url}) "
                              f"`{fmt_time(p.position)}/{c.fmt_duration()}`")
         for i, t in items[page * per_page:(page + 1) * per_page]:
             e.groove_rows.append((queue_row(p, i, t), t.thumbnail))
         if p.current:
             e.add_field(
                 name="กำลังเล่น",
-                value=f"[{p.current.title[:80]}]({p.current.url}) "
+                value=f"[{p.current.name[:80]}]({p.current.url}) "
                       f"`{fmt_time(p.position)}/{p.current.fmt_duration()}`",
                 inline=False,
             )
         lines = []
         for i, t in items[page * per_page:(page + 1) * per_page]:
-            lines.append(f"`{i}.` {t.title[:70]} `[{t.fmt_duration()}]` · {t.requester_name}")
+            lines.append(f"`{i}.` {t.name[:70]} `[{t.fmt_duration()}]` · {t.requester_name}")
         e.description = "\n".join(lines) or ("ไม่พบเพลงที่ค้น" if query else "คิวว่าง")
         e.set_footer(text=(
             f"หน้า {page + 1}/{total_pages} · "
@@ -346,7 +354,7 @@ class QueueView(PagesView):
         if items:
             self.picker.options = [
                 discord.SelectOption(
-                    label=f"{i}. {t.title}"[:100], value=str(i),
+                    label=f"{i}. {t.name}"[:100], value=str(i),
                     description=f"{t.fmt_duration()} · {t.requester_name or '-'}"[:100],
                     default=id(t) in chosen)
                 for i, t in items]
@@ -404,7 +412,7 @@ class QueueView(PagesView):
         def run(p):
             t = self._alive(p)[0]
             p.jump(next(i for i, x in enumerate(p.queue, 1) if x is t))
-            return f"⏩ ไปที่ **{t.title}**"
+            return f"⏩ ไปที่ **{t.name}**"
         await self._apply(inter, "jump", run)
 
     @discord.ui.button(emoji="⬆️", label="ถัดไป", style=discord.ButtonStyle.secondary, row=0)
@@ -413,7 +421,7 @@ class QueueView(PagesView):
             alive = self._alive(p)
             p.move_to_front(alive)
             if len(alive) == 1:
-                return f"⬆️ ย้าย **{alive[0].title}** ขึ้นเป็นเพลงถัดไป"
+                return f"⬆️ ย้าย **{alive[0].name}** ขึ้นเป็นเพลงถัดไป"
             return f"⬆️ ย้าย {len(alive)} เพลงขึ้นต้นคิว"
         await self._apply(inter, "move", run)
 
@@ -427,7 +435,7 @@ class QueueView(PagesView):
                 raise UserError("ลบได้เฉพาะเพลงของตัวเอง")
             p.remove_tracks(mine)
             skipped = len(alive) - len(mine)
-            text = f"🗑 ลบ **{mine[0].title}**" if len(mine) == 1 else f"🗑 ลบ {len(mine)} เพลง"
+            text = f"🗑 ลบ **{mine[0].name}**" if len(mine) == 1 else f"🗑 ลบ {len(mine)} เพลง"
             return text + (f" (ข้าม {skipped} เพลงของคนอื่น)" if skipped else "")
         await self._apply(inter, "remove", run)
 
@@ -482,7 +490,7 @@ async def build_queue_card(p: "GuildPlayer", query: str = "", start: int = 0,
     for pos, t in items:
         eta = p.eta(pos - 1)
         when = "ถัดไป" if pos == 1 else (f"เล่น {clock_after(eta)}" if eta is not None else "")
-        rows.append({"pos": pos, "title": t.title, "artist": t.artist,
+        rows.append({"pos": pos, "title": t.name, "artist": t.artist,
                      "requester": t.requester_name or "-", "duration": t.fmt_duration(),
                      "when": when})
     remain = p.total_remaining()
@@ -584,36 +592,30 @@ class LyricsView(PagesView):
 
 def build_added_embed(p: "GuildPlayer", tracks: list[Track], index: int,
                       label: str = "") -> discord.Embed:
-    """Reply for /play: cover, queue position and when it will play.
-    index: 0-based queue position of the first added track."""
+    """Short reply for /play: one line with the queue position and when it will play
+    (a timestamp that counts down by itself). index: 0-based queue position."""
     first = tracks[0]
     starts_now = not p.current and index == 0
-    eta = "ตอนนี้" if starts_now else relative_ts(p.eta(index))
+    secs = p.eta(index)
+    eta = relative_ts(secs)
+    e = discord.Embed(color=track_color(first))
     if len(tracks) == 1:
-        e = discord.Embed(title=first.title[:250], color=track_color(first),
-                          url=first.url if first.url.startswith("http") else None)
-        e.set_author(name=label or ("▶️ กำลังจะเล่น" if starts_now else "➕ เพิ่มเข้าคิว"))
-        if first.artist:
-            e.description = f"**{first.artist}**"
-        pos = "กำลังจะเล่น" if starts_now else ("ถัดไป" if index == 0 else f"#{index + 1}")
-        e.add_field(name="ลำดับในคิว", value=pos)
-        e.add_field(name="ความยาว", value=first.fmt_duration())
-        e.add_field(name="จะได้เล่น", value=eta)
-    else:
-        e = discord.Embed(title=f"เพิ่ม {len(tracks)} เพลงเข้าคิว", color=track_color(first))
-        e.set_author(name=label or "➕ เพิ่มเข้าคิว")
-        lines = [f"`{index + i}.` {t.title[:60]} `[{t.fmt_duration()}]`"
-                 for i, t in enumerate(tracks[:5], 1)]
-        if len(tracks) > 5:
-            lines.append(f"-# และอีก {len(tracks) - 5} เพลง")
-        e.description = "\n".join(lines)
-        e.add_field(name="ลำดับในคิว", value=f"#{index + 1} – #{index + len(tracks)}")
-        if all(t.duration for t in tracks):
-            e.add_field(name="ความยาวรวม", value=fmt_time(sum(t.duration for t in tracks)))
-        e.add_field(name="เริ่มเล่น", value=eta)
-    if first.thumbnail:
-        e.set_thumbnail(url=first.thumbnail)
-    e.set_footer(text=f"ขอโดย {first.requester_name or '-'}")
+        if starts_now:
+            e.description = f"{label or '▶️'} {_link(first)} `{first.fmt_duration()}` · กำลังจะเล่น"
+        else:
+            where = "ถัดไป" if index == 0 else f"คิวที่ {index + 1}"
+            e.description = (f"{label or '➕'} {_link(first)} `{first.fmt_duration()}`"
+                             f" · {where}" + (f" · เล่น {eta}" if secs is not None else ""))
+        return e
+    total = (f" · รวม {fmt_time(sum(t.duration for t in tracks))}"
+             if all(t.duration for t in tracks) else "")
+    when = "เริ่มเลย" if starts_now else f"คิวที่ {index + 1}–{index + len(tracks)}"
+    if not starts_now and secs is not None:
+        when += f" · เริ่ม {eta}"
+    head = f"{label} · " if label else "➕ "
+    names = " · ".join(_plain(t.name, 40) for t in tracks[:3])
+    more = f" และอีก {len(tracks) - 3} เพลง" if len(tracks) > 3 else ""
+    e.description = f"{head}เพิ่ม **{len(tracks)} เพลง**{total} · {when}\n-# {names}{more}"
     return e
 
 
@@ -629,7 +631,7 @@ class SearchView(discord.ui.View):
         select = discord.ui.Select(
             placeholder="เลือกเพลง",
             options=[
-                discord.SelectOption(label=t.title[:100], description=t.fmt_duration(),
+                discord.SelectOption(label=t.name[:100], description=t.fmt_duration(),
                                      value=str(i))
                 for i, t in enumerate(tracks)
             ],
@@ -738,6 +740,20 @@ async def audit_inter(inter: discord.Interaction, action: str, detail: str = "")
 
 
 VOLUME_PRESETS = (10, 25, 50, 75, 100, 125)
+VOLUME_NAMES = {  # preset: (name, description, emoji)
+    10: ("เบามาก", "เปิดคลอเป็นพื้นหลัง", "🔈"),
+    25: ("เบา", "ฟังตอนทำงานหรืออ่านหนังสือ", "🔈"),
+    50: ("พอดี", "ฟังสบาย ไม่กลบเสียงคุย", "🔉"),
+    75: ("ค่อนข้างดัง", "ตั้งใจฟังเพลง", "🔉"),
+    100: ("ปกติ", "ความดังต้นฉบับของเพลง", "🔊"),
+    125: ("ดังพิเศษ", "ขยายเสียงเกินต้นฉบับ อาจแตกได้", "📢"),
+}
+
+
+def _volume_option(v: int) -> discord.SelectOption:
+    name, desc, emoji = VOLUME_NAMES[v]
+    return discord.SelectOption(label=f"{v}% · {name}", value=str(v), description=desc,
+                                emoji=emoji)
 SEEK_STEP = 10  # seconds for the ⏪ ⏩ panel buttons
 
 
@@ -791,8 +807,11 @@ class PanelView(discord.ui.View):
         elif p.loading:
             self.pause.disabled = True
         current = int(round(p.volume * 100))
+        self.volume_select.placeholder = f"🔊 ระดับเสียง: {current}%"
         for opt in self.volume_select.options:
             opt.default = int(opt.value) == current
+            if opt.default:  # the closed menu shows this label
+                opt.label = f"ระดับเสียง: {current}% · {VOLUME_NAMES[current][0]}"
 
     # row 0: transport, row 1: queue and extras, row 2: add / volume / live lyrics,
     # row 3: volume presets
@@ -816,7 +835,7 @@ class PanelView(discord.ui.View):
     async def skip(self, inter, _):
         await act_skip(inter)
 
-    @discord.ui.button(emoji="⏹", style=discord.ButtonStyle.secondary, custom_id="mb:stop", row=1)
+    @discord.ui.button(emoji="⏹", style=discord.ButtonStyle.danger, custom_id="mb:stop", row=1)
     async def stop_btn(self, inter, _):
         await act_stop(inter)
 
@@ -837,7 +856,7 @@ class PanelView(discord.ui.View):
     async def lyrics_btn(self, inter, _):
         await act_lyrics(inter)
 
-    @discord.ui.button(emoji="➕", label="เพิ่มเพลง", style=discord.ButtonStyle.secondary,
+    @discord.ui.button(emoji="➕", label="เพิ่มเพลง", style=discord.ButtonStyle.success,
                        custom_id="mb:add", row=2)
     async def add_btn(self, inter, _):
         await act_add(inter)
@@ -858,8 +877,7 @@ class PanelView(discord.ui.View):
         await act_live_lyrics(inter)
 
     @discord.ui.select(placeholder="🔊 ระดับเสียง", custom_id="mb:volpreset", row=3,
-                       options=[discord.SelectOption(label=f"{v}%", value=str(v))
-                                for v in VOLUME_PRESETS])
+                       options=[_volume_option(v) for v in VOLUME_PRESETS])
     async def volume_select(self, inter, select: discord.ui.Select):
         value = int(select.values[0])
         await _act(inter, lambda p: (p.set_volume(value), None)[1], f"volume {value}")
@@ -895,7 +913,7 @@ class CompactPanelView(discord.ui.View):
     async def skip(self, inter, _):
         await act_skip(inter)
 
-    @discord.ui.button(emoji="⏹", style=discord.ButtonStyle.secondary, custom_id="mbc:stop")
+    @discord.ui.button(emoji="⏹", style=discord.ButtonStyle.danger, custom_id="mbc:stop")
     async def stop_btn(self, inter, _):
         await act_stop(inter)
 

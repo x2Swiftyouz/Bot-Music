@@ -119,7 +119,7 @@ class Music(commands.Cog):
         except Exception:
             return []  # slow search runs on in its own small pool, playback unaffected
         choices = [
-            app_commands.Choice(name=f"{t.title[:85]} ({t.fmt_duration()})", value=t.url[:100])
+            app_commands.Choice(name=f"{t.name[:85]} ({t.fmt_duration()})", value=t.url[:100])
             for t in results
         ]
         self._ac_cache[key] = (time.time(), choices)
@@ -155,7 +155,7 @@ class Music(commands.Cog):
             if await clean.enabled(self.bot, i.guild_id):
                 clean.later(config.AUTO_CLEAN_SECONDS, i)
 
-        lines = [f"`{n}.` {t.title[:80]} `[{t.fmt_duration()}]`"
+        lines = [f"`{n}.` {t.name[:80]} `[{t.fmt_duration()}]`"
                  for n, t in enumerate(results, 1)]
         embed = discord.Embed(title=f"🔎 {query}", description="\n".join(lines),
                               color=0x5865F2)
@@ -288,7 +288,7 @@ class Music(commands.Cog):
         if t.requester_id != inter.user.id and not p.is_admin(inter.user):
             raise UserError("ลบได้เฉพาะเพลงของตัวเอง")
         p.remove_at(index)
-        await inter.response.send_message(f"🗑 ลบ **{t.title}**")
+        await inter.response.send_message(f"🗑 ลบ **{t.name}**")
 
     @app_commands.command(description="ย้ายเพลงในคิว")
     @app_commands.guild_only()
@@ -298,7 +298,7 @@ class Music(commands.Cog):
         if from_index > len(p.queue):
             raise UserError("ไม่มีลำดับนี้")
         t = p.move_track(from_index, to_index)
-        await inter.response.send_message(f"↕️ ย้าย **{t.title}** ไปลำดับ {to_index}")
+        await inter.response.send_message(f"↕️ ย้าย **{t.name}** ไปลำดับ {to_index}")
 
     @app_commands.command(description="ข้ามไปเพลงลำดับที่ระบุ")
     @app_commands.guild_only()
@@ -307,7 +307,7 @@ class Music(commands.Cog):
         t = p.jump(index)
         if not t:
             raise UserError("ไม่มีลำดับนี้")
-        await inter.response.send_message(f"⏩ ไปที่ **{t.title}**")
+        await inter.response.send_message(f"⏩ ไปที่ **{t.name}**")
 
     @app_commands.command(description="ล้างคิว (ไม่หยุดเพลงปัจจุบัน)")
     @app_commands.guild_only()

@@ -151,7 +151,7 @@ class Playlists(commands.Cog):
         new = [t.to_dict() for t in tracks if t.url not in urls]
         data.extend(new)
         await self.bot.db.save_playlist(inter.user.id, name, data[:config.MAX_QUEUE])
-        what = f"**{tracks[0].title}**" if len(new) == 1 else f"{len(new)} เพลง"
+        what = f"**{tracks[0].name}**" if len(new) == 1 else f"{len(new)} เพลง"
         await inter.followup.send(f"➕ เพิ่ม {what} เข้า **{name}**", ephemeral=True)
 
     @playlist.command(description="ลบเพลงออกจากเพลย์ลิสต์ตามลำดับ")

@@ -85,12 +85,15 @@ class Geo:
     wave_y: int
     wave_h: int
     time_y: int
+    s: float = 1.0       # size of the small text, chips and icons
+    title_size2: int = 0  # wide: a title that needs two lines uses this size instead
 
 
-# 3:1 like Groove's MusicCard (780x260), drawn larger so it stays sharp.
+# 3:1 like Groove's MusicCard (780x260), drawn larger so it stays sharp. Discord shows it
+# at about 45%, so the small text is drawn 1.4x bigger than on the other layouts.
 WIDE = Geo(w=1200, h=400, art=328, art_x=36, art_y=36, x0=404, max_w=756, center=False,
-           label_y=32, title_y=60, title_size=34, chips_y=226, next_y=266,
-           wave_y=310, wave_h=34, time_y=350)
+           label_y=26, title_y=64, title_size=44, chips_y=204, next_y=254,
+           wave_y=310, wave_h=28, time_y=346, s=1.4, title_size2=34)
 # Square flows below the text and is cropped to its content (see _flow).
 SQUARE = Geo(w=640, h=820, art=300, art_x=170, art_y=36, x0=40, max_w=560, center=True,
              label_y=352, title_y=384, title_size=32, chips_y=0, next_y=0,
@@ -164,8 +167,14 @@ def _wrap(draw: ImageDraw.ImageDraw, text: str, fnt, max_w: float, lines: int) -
     return out
 
 
-def _fit_title(draw, text: str, size: int, max_w: float, lines: int = 2):
-    """Largest of size, size-4, size-8 that fits without '…'. Returns (font, lines)."""
+def _fit_title(draw, text: str, size: int, max_w: float, lines: int = 2, size2: int = 0):
+    """Largest of size, size-4, size-8 that fits without '…'. Returns (font, lines).
+    size2: a title that does not fit on one line at `size` uses two lines from size2 down."""
+    if size2:
+        fnt = font("Bold", size)
+        if draw.textlength(text, font=fnt) <= max_w:
+            return fnt, [text]
+        size = size2
     for s in (size, size - 4, size - 8):
         fnt = font("Bold", s)
         wrapped = _wrap(draw, text, fnt, max_w, lines)
@@ -177,7 +186,7 @@ def _fit_title(draw, text: str, size: int, max_w: float, lines: int = 2):
 def display_title(track: Track) -> str:
     """'Artist - Song' becomes 'Song' when the artist line already shows the artist."""
     artist = (track.artist or "").strip()
-    title = track.title
+    title = track.name
     for sep in (" - ", " – ", " — "):
         if artist and title.lower().startswith(artist.lower() + sep):
             return title[len(artist) + len(sep):].strip() or title
@@ -188,9 +197,9 @@ def alt_text(track: Track, st: CardState) -> str:
     """Screen-reader description of a card (Discord attachment alt text)."""
     who = f" โดย {track.artist}" if track.artist else ""
     if st.mode == "error":
-        return f"เล่นไม่ได้: {track.title}{who}. {st.reason}"[:1000]
+        return f"เล่นไม่ได้: {track.name}{who}. {st.reason}"[:1000]
     if st.mode == "loading":
-        return f"กำลังโหลด {track.title}{who}"[:1000]
+        return f"กำลังโหลด {track.name}{who}"[:1000]
     if not track.duration:
         timing = "ถ่ายทอดสด"
     elif st.mode == "share":
@@ -198,7 +207,7 @@ def alt_text(track: Track, st: CardState) -> str:
     else:
         timing = f"{fmt_time(st.position)} จาก {fmt_time(track.duration)}"
     state = "หยุดชั่วคราว" if st.paused else ("กำลังฟัง" if st.mode == "share" else "กำลังเล่น")
-    text = f"{state} {track.title}{who}, {timing}, ขอโดย {track.requester_name or '-'}"
+    text = f"{state} {track.name}{who}, {timing}, ขอโดย {track.requester_name or '-'}"
     if st.next_title and st.mode == "play":
         text += f". ถัดไป: {st.next_title}"
     return text[:1000]
@@ -294,29 +303,37 @@ def _note(d: ImageDraw.ImageDraw, x: float, y: float, size: float, color):
 ICON_W = 16
 
 
-def _icon(d: ImageDraw.ImageDraw, kind: str, x: float, cy: float, color, muted=False):
-    """Small chip icons drawn with shapes (Kanit has no emoji)."""
+def _icon(d: ImageDraw.ImageDraw, kind: str, x: float, cy: float, color, muted=False,
+          k: float = 1.0):
+    """Small chip icons drawn with shapes (Kanit has no emoji). k scales them."""
+    def P(dx, dy):
+        return x + dx * k, cy + dy * k
+
+    def box(x0, y0, x1, y1):
+        return (*P(x0, y0), *P(x1, y1))
+
+    w2 = max(round(2 * k), 2)
     if kind == "vol":
-        d.rectangle((x, cy - 3, x + 4, cy + 3), fill=color)
-        d.polygon([(x + 4, cy - 3), (x + 9, cy - 7), (x + 9, cy + 7), (x + 4, cy + 3)], fill=color)
+        d.rectangle(box(0, -3, 4, 3), fill=color)
+        d.polygon([P(4, -3), P(9, -7), P(9, 7), P(4, 3)], fill=color)
         if muted:
-            d.line((x + 11, cy - 4, x + 16, cy + 4), fill=color, width=2)
-            d.line((x + 11, cy + 4, x + 16, cy - 4), fill=color, width=2)
+            d.line(box(11, -4, 16, 4), fill=color, width=w2)
+            d.line(box(11, 4, 16, -4), fill=color, width=w2)
         else:
-            d.arc((x + 5, cy - 6, x + 15, cy + 6), -55, 55, fill=color, width=2)
+            d.arc(box(5, -6, 15, 6), -55, 55, fill=color, width=w2)
     elif kind == "loop":
-        d.arc((x, cy - 7, x + 15, cy + 7), 20, 320, fill=color, width=2)
-        d.polygon([(x + 10, cy - 8), (x + 17, cy - 8), (x + 14, cy - 2)], fill=color)
+        d.arc(box(0, -7, 15, 7), 20, 320, fill=color, width=w2)
+        d.polygon([P(10, -8), P(17, -8), P(14, -2)], fill=color)
     elif kind == "queue":
         for i in range(3):
-            d.rounded_rectangle((x, cy - 6 + i * 5, x + 15 - i * 3, cy - 4 + i * 5), 1, fill=color)
+            d.rounded_rectangle(box(0, -6 + i * 5, 15 - i * 3, -4 + i * 5), 1, fill=color)
     elif kind == "hot":
-        d.ellipse((x + 2, cy - 2, x + 14, cy + 8), fill=color)
-        d.polygon([(x + 2, cy + 3), (x + 9, cy - 9), (x + 14, cy + 3)], fill=color)
+        d.ellipse(box(2, -2, 14, 8), fill=color)
+        d.polygon([P(2, 3), P(9, -9), P(14, 3)], fill=color)
     elif kind == "cake":
-        d.rounded_rectangle((x, cy, x + 16, cy + 7), 2, fill=color)
-        d.rectangle((x + 7, cy - 6, x + 9, cy), fill=color)
-        d.ellipse((x + 6, cy - 10, x + 10, cy - 6), fill=color)
+        d.rounded_rectangle(box(0, 0, 16, 7), 2, fill=color)
+        d.rectangle(box(7, -6, 9, 0), fill=color)
+        d.ellipse(box(6, -10, 10, -6), fill=color)
 
 
 # --------------------------------------------------------------------- art
@@ -534,7 +551,8 @@ def _render_base(track: Track, art_bytes: Optional[bytes], g: Geo, theme: str) -
                fill=_readable((200, 200, 212), bg))
         base = Base(canvas, accent, accent2, bg, g.h)
     else:
-        title_font, lines = _fit_title(d, display_title(track), g.title_size, g.max_w)
+        title_font, lines = _fit_title(d, display_title(track), g.title_size, g.max_w,
+                                       size2=g.title_size2)
         lh = int(title_font.size * 1.3)
         y = g.title_y
         for line in lines:
@@ -543,15 +561,29 @@ def _render_base(track: Track, art_bytes: Optional[bytes], g: Geo, theme: str) -
                 d = ImageDraw.Draw(canvas)
             _text(d, g, y, line, title_font, WHITE)
             y += lh
-        if track.artist:
-            fnt = font("Medium", 23)
-            _text(d, g, y + 2, _fit(d, track.artist, fnt, g.max_w), fnt,
-                  _readable((225, 225, 235), bg))
-            y += 32
-        fnt = font("Regular", 19)
-        _text(d, g, y + 4, _fit(d, f"ขอโดย {track.requester_name or '-'}", fnt, g.max_w), fnt,
-              _readable((185, 185, 198), bg))
-        base = Base(canvas, accent, accent2, bg, y + 32)
+        who = f"ขอโดย {track.requester_name or '-'}"
+        if g.title_size2:  # wide: artist and requester share one line
+            y += 4
+            x = g.x0
+            if track.artist:
+                fnt = font("Medium", 30)
+                artist = _fit(d, track.artist, fnt, g.max_w * 0.6)
+                d.text((x, y), artist, font=fnt, fill=_readable((225, 225, 235), bg))
+                x += d.textlength(artist, font=fnt)
+                who = f"  ·  {who}"
+            fnt = font("Regular", 25)
+            d.text((x, y + 4), _fit(d, who, fnt, g.x0 + g.max_w - x), font=fnt,
+                   fill=_readable((185, 185, 198), bg))
+            base = Base(canvas, accent, accent2, bg, y + 40)
+        else:
+            if track.artist:
+                fnt = font("Medium", 23)
+                _text(d, g, y + 2, _fit(d, track.artist, fnt, g.max_w), fnt,
+                      _readable((225, 225, 235), bg))
+                y += 32
+            fnt = font("Regular", 19)
+            _text(d, g, y + 4, _fit(d, who, fnt, g.max_w), fnt, _readable((185, 185, 198), bg))
+            base = Base(canvas, accent, accent2, bg, y + 32)
 
     _base_cache[key] = base
     while len(_base_cache) > BASE_CACHE_SIZE:
@@ -670,31 +702,33 @@ def current_chapter(track: Track, position: float) -> str:
 # ------------------------------------------------------------- other parts
 def _draw_chips(canvas: Image.Image, g: Geo, chips: list[tuple]):
     """chips: (icon, text, rgba fill, text colour, muted)."""
-    fnt = font("Medium", 17)
+    k = g.s
+    fnt = font("Medium", round(17 * k))
     d = ImageDraw.Draw(canvas)
+    gap, icon_w, pad = 10 * k, (ICON_W + 8) * k, 26 * k
     sizes = []
     for icon, text, *_ in chips:
-        sizes.append((ICON_W + 8 if icon else 0) + d.textlength(text, font=fnt) + 26)
-    while chips and sum(sizes) + 10 * (len(sizes) - 1) > g.max_w:
+        sizes.append((icon_w if icon else 0) + d.textlength(text, font=fnt) + pad)
+    while chips and sum(sizes) + gap * (len(sizes) - 1) > g.max_w:
         chips, sizes = chips[:-1], sizes[:-1]
     if not chips:
         return
-    x = _row_x(g, sum(sizes) + 10 * (len(sizes) - 1))
-    y0, y1 = g.chips_y, g.chips_y + 30
+    x = _row_x(g, sum(sizes) + gap * (len(sizes) - 1))
+    y0, y1 = g.chips_y, g.chips_y + 30 * k
     layer = Image.new("RGBA", canvas.size, (0, 0, 0, 0))
     ld = ImageDraw.Draw(layer)
     spots = []
     for (icon, text, fill, color, muted), w in zip(chips, sizes):
-        ld.rounded_rectangle((x, y0, x + w, y1), 15, fill=fill)
-        spots.append((x + 13, icon, text, color, muted))
-        x += w + 10
+        ld.rounded_rectangle((x, y0, x + w, y1), 15 * k, fill=fill)
+        spots.append((x + 13 * k, icon, text, color, muted))
+        x += w + gap
     canvas.alpha_composite(layer)
     d = ImageDraw.Draw(canvas)
     cy = (y0 + y1) / 2
     for tx, icon, text, color, muted in spots:
         if icon:
-            _icon(d, icon, tx, cy, color, muted)
-            tx += ICON_W + 8
+            _icon(d, icon, tx, cy, color, muted, k)
+            tx += icon_w
         d.text((tx, cy), text, font=fnt, fill=color, anchor="lm")
 
 
@@ -720,7 +754,8 @@ def _badges(st: CardState) -> list[tuple]:
 
 def _draw_label(canvas: Image.Image, g: Geo, st: CardState, track: Track, accent):
     d = ImageDraw.Draw(canvas)
-    fnt = font("Medium", 19)
+    k = g.s
+    fnt = font("Medium", round(19 * k))
     live = not track.duration
     if st.mode == "loading":
         text, color, icon = "กำลังโหลด · LOADING", (200, 200, 210), "dots"
@@ -735,20 +770,21 @@ def _draw_label(canvas: Image.Image, g: Geo, st: CardState, track: Track, accent
     if live and st.mode in ("play", "share"):
         text = "LIVE · " + text
         icon = icon or "live"
-    icon_w = {"pause": 24, "dots": 30, "live": 22}.get(icon, 0)
+    icon_w = {"pause": 24, "dots": 30, "live": 22}.get(icon, 0) * k
     x = _row_x(g, icon_w + d.textlength(text, font=fnt))
-    cy = g.label_y + 12
+    cy = g.label_y + 12 * k
     if icon == "pause":
-        d.rectangle((x, cy - 8, x + 5, cy + 8), fill=color)
-        d.rectangle((x + 10, cy - 8, x + 15, cy + 8), fill=color)
+        d.rectangle((x, cy - 8 * k, x + 5 * k, cy + 8 * k), fill=color)
+        d.rectangle((x + 10 * k, cy - 8 * k, x + 15 * k, cy + 8 * k), fill=color)
     elif icon == "dots":
         for i in range(3):
-            d.ellipse((x + i * 8, cy - 3, x + i * 8 + 6, cy + 3), fill=color)
+            d.ellipse((x + i * 8 * k, cy - 3 * k, x + (i * 8 + 6) * k, cy + 3 * k), fill=color)
     elif icon == "live":
+        dot = (x + k, cy - 6 * k, x + 13 * k, cy + 6 * k)
         if st.blink:  # alternates every refresh: a slow blink
-            d.ellipse((x + 1, cy - 6, x + 13, cy + 6), fill=RED)
+            d.ellipse(dot, fill=RED)
         else:
-            d.ellipse((x + 1, cy - 6, x + 13, cy + 6), outline=RED, width=2)
+            d.ellipse(dot, outline=RED, width=max(round(2 * k), 2))
     d.text((x + icon_w, cy), text, font=fnt, fill=color, anchor="lm")
 
 
@@ -759,19 +795,21 @@ def _draw_next(canvas: Image.Image, g: Geo, title: str, accent, bg,
                thumb: Optional[Image.Image]):
     """'Up next' row with a small cover in front of the title."""
     d = ImageDraw.Draw(canvas)
-    head, body = font("Medium", 18), font("Regular", 18)
+    k = g.s
+    size, thumb_w, gap = round(18 * k), round(THUMB * k), 8 * k
+    head, body = font("Medium", size), font("Regular", size)
     prefix = "ถัดไป  "
     pw = d.textlength(prefix, font=head)
-    room = g.max_w - pw - THUMB - 8
+    room = g.max_w - pw - thumb_w - gap
     text = _fit(d, title, body, room)
-    x = _row_x(g, pw + THUMB + 8 + d.textlength(text, font=body))
+    x = _row_x(g, pw + thumb_w + gap + d.textlength(text, font=body))
     d.text((x, g.next_y), prefix, font=head, fill=accent)
     tx = x + pw
-    ty = g.next_y + 1
-    small = _cover(thumb, THUMB, _mix(accent, bg, 0.4))
-    canvas.alpha_composite(_rounded(small, 6), (int(tx), int(ty)))
+    ty = g.next_y + k
+    small = _cover(thumb, thumb_w, _mix(accent, bg, 0.4))
+    canvas.alpha_composite(_rounded(small, round(6 * k)), (int(tx), int(ty)))
     d = ImageDraw.Draw(canvas)
-    d.text((tx + THUMB + 8, g.next_y), text, font=body, fill=_readable((215, 215, 225), bg))
+    d.text((tx + thumb_w + gap, g.next_y), text, font=body, fill=_readable((215, 215, 225), bg))
 
 
 def _right_time(track: Track, st: CardState) -> str:
@@ -785,7 +823,7 @@ def _right_time(track: Track, st: CardState) -> str:
 def _draw_times(canvas: Image.Image, g: Geo, left: str, right: str, right_color=None,
                 middle: str = ""):
     d = ImageDraw.Draw(canvas)
-    size = 14 if g is MINI else 18
+    size = 14 if g is MINI else round(18 * g.s)
     fnt = font("Regular", size)
     x0, total = _wave_box(g)
     if left:
@@ -798,6 +836,19 @@ def _draw_times(canvas: Image.Image, g: Geo, left: str, right: str, right_color=
         text = _fit(d, middle, mf, total - 2 * max(d.textlength(left or "", font=fnt),
                                                    d.textlength(right or "", font=fnt)) - 40)
         d.text((x0 + total / 2, g.time_y + 1), text, font=mf, fill=(190, 190, 205), anchor="ma")
+
+
+def _spinner(canvas: Image.Image, cx: float, cy: float, r: float):
+    """A loading ring: a dark disc, a faint track and a bright arc."""
+    layer = Image.new("RGBA", canvas.size, (0, 0, 0, 0))
+    d = ImageDraw.Draw(layer)
+    pad = r * 0.55
+    d.ellipse((cx - r - pad, cy - r - pad, cx + r + pad, cy + r + pad), fill=(0, 0, 0, 150))
+    box = (cx - r, cy - r, cx + r, cy + r)
+    width = max(int(r * 0.22), 3)
+    d.ellipse(box, outline=(255, 255, 255, 60), width=width)
+    d.arc(box, -90, 30, fill=(255, 255, 255, 235), width=width)
+    canvas.alpha_composite(layer)
 
 
 def _encode(canvas: Image.Image) -> bytes:
@@ -842,24 +893,28 @@ def render(track: Track, art_bytes: Optional[bytes], st: CardState = CardState()
     glow = theme == "neon"
     if st.mode == "error":
         canvas.alpha_composite(Image.new("RGBA", canvas.size, (120, 0, 0, 70)))
+    if st.mode == "loading":  # the new song, faded, with a spinner on its cover
+        canvas.alpha_composite(Image.new("RGBA", canvas.size, (8, 8, 12, 120)))
+        _spinner(canvas, g.art_x + g.art / 2, g.art_y + g.art / 2, g.art * 0.13)
     _draw_label(canvas, g, st, track, accent)
 
     if st.mode == "error":
         d = ImageDraw.Draw(canvas)
-        fnt = font("Regular", 18)
+        fnt = font("Regular", round(18 * g.s))
         y = g.chips_y
         for line in _wrap(d, st.reason or "ไม่ทราบสาเหตุ", fnt, g.max_w, 3):
             _text(d, g, y, line, fnt, (255, 190, 190))
-            y += 26
+            y += 26 * g.s
         return _encode(canvas)
 
     if st.mode == "loading":
         layer = Image.new("RGBA", canvas.size, (0, 0, 0, 0))
         ld = ImageDraw.Draw(layer)
-        x = _row_x(g, 3 * 90 + 2 * 10)
+        k = g.s
+        x = _row_x(g, (3 * 90 + 2 * 10) * k)
         for i in range(3):  # skeleton chips
-            ld.rounded_rectangle((x + i * 100, g.chips_y, x + i * 100 + 90, g.chips_y + 30), 15,
-                                 fill=(255, 255, 255, 30))
+            ld.rounded_rectangle((x + i * 100 * k, g.chips_y, x + (i * 100 + 90) * k,
+                                  g.chips_y + 30 * k), 15 * k, fill=(255, 255, 255, 30))
         canvas.alpha_composite(layer)
         _draw_wave(canvas, g, track, None, accent, accent2, bg)
         return _encode(canvas)

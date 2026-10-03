@@ -309,7 +309,7 @@ class GuildPlayer:
         if (not self.vote_skip_enabled or self.is_admin(member)
                 or member.id == self.current.requester_id or len(humans) <= 2):
             self.skip()
-            return f"⏭ ข้าม **{self.current.title}**"
+            return f"⏭ ข้าม **{self.current.name}**"
         self.skip_votes.add(member.id)
         self.skip_votes &= {m.id for m in humans}
         need = self.skip_need()
@@ -609,7 +609,7 @@ class GuildPlayer:
         log.info("[%s] Resolved in %.1fs", self.guild.id, time.monotonic() - t0)
 
         if config.MAX_DURATION and track.duration and track.duration > config.MAX_DURATION:
-            await self.send(f"⛔ **{track.title}** ยาวเกิน {fmt_time(config.MAX_DURATION)} ข้าม")
+            await self.send(f"⛔ **{track.name}** ยาวเกิน {fmt_time(config.MAX_DURATION)} ข้าม")
             self.current = None
             return
 
@@ -819,7 +819,7 @@ class GuildPlayer:
 
     # ------------------------------------------------------ status & panel
     async def _set_status(self, track: Optional[Track]):
-        status = f"🎵 {track.title}"[:450] if track else None
+        status = f"🎵 {track.name}"[:450] if track else None
         if status == self._last_status or not self.vc or not self.vc.channel:
             return
         self._last_status = status
@@ -831,7 +831,7 @@ class GuildPlayer:
     async def _update_presence(self):
         try:
             if len(self.bot.players) == 1 and self.current:
-                name = self.current.title[:120]
+                name = self.current.name[:120]
             else:
                 name = f"/play | {len(self.bot.players)} servers"
             await self.bot.change_presence(
@@ -851,7 +851,7 @@ class GuildPlayer:
             position=self.position, volume=int(round(self.volume * 100)), loop=self.loop_mode,
             queue_len=len(self.queue), paused=self.is_paused,
             time_mode=TIME_MODES[self.time_format], end_clock=end_clock,
-            next_title=nxt.title if nxt else "", next_thumb=(nxt.thumbnail or "") if nxt else "",
+            next_title=nxt.name if nxt else "", next_thumb=(nxt.thumbnail or "") if nxt else "",
             hot=self.track_plays, birthday=self.requester_birthday, blink=self._blink,
             theme=self.card_theme, layout="mini" if self.compact else self.card_layout,
             mode=mode, reason=reason)
@@ -908,7 +908,7 @@ class GuildPlayer:
 
     async def _show_error(self, track: Track, reason: str):
         """Error card for a track that cannot play. Replaces the loading card if shown."""
-        text = f"⚠️ เล่นไม่ได้ ข้าม: **{track.title}**\n`{reason}`"
+        text = f"⚠️ เล่นไม่ได้ ข้าม: **{track.name}**\n`{reason}`"
         card = await self.card_file("error", reason)
         loading, self.loading = self.loading, False
         if loading and self.panel_message and not self._is_request_panel():

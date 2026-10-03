@@ -129,7 +129,7 @@ class Prefix(commands.Cog):
             if await clean.enabled(self.bot, msg.guild.id):
                 clean.later(config.AUTO_CLEAN_SECONDS, i, msg)
 
-        lines = [f"`{n}.` {t.title[:80]} `[{t.fmt_duration()}]`" for n, t in enumerate(results, 1)]
+        lines = [f"`{n}.` {t.name[:80]} `[{t.fmt_duration()}]`" for n, t in enumerate(results, 1)]
         e = discord.Embed(title=f"🔎 {args}", description="\n".join(lines), color=0x5865F2)
         await self._say(msg, embed=e, view=SearchView(results, msg.author.id, picked))
 
@@ -195,7 +195,7 @@ class Prefix(commands.Cog):
         if t.requester_id != msg.author.id and not p.is_admin(msg.author):
             raise UserError("ลบได้เฉพาะเพลงของตัวเอง")
         p.remove_at(i)
-        await self._say(msg, f"🗑 ลบ **{t.title}**")
+        await self._say(msg, f"🗑 ลบ **{t.name}**")
 
     async def cmd_move(self, msg, args):
         p = self._ctl(msg)
@@ -206,13 +206,13 @@ class Prefix(commands.Cog):
         if not 1 <= a <= len(p.queue) or b < 1:
             raise UserError("ไม่มีลำดับนี้")
         t = p.move_track(a, b)
-        await self._say(msg, f"↕️ ย้าย **{t.title}** ไปลำดับ {b}")
+        await self._say(msg, f"↕️ ย้าย **{t.name}** ไปลำดับ {b}")
 
     async def cmd_jump(self, msg, args):
         t = self._ctl(msg).jump(_int(args, "ลำดับ"))
         if not t:
             raise UserError("ไม่มีลำดับนี้")
-        await self._say(msg, f"⏩ ไปที่ **{t.title}**")
+        await self._say(msg, f"⏩ ไปที่ **{t.name}**")
 
     async def cmd_shuffle(self, msg, args):
         p = self._ctl(msg)

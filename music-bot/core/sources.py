@@ -79,6 +79,32 @@ def detect_source(url: str) -> str:
     return "other"
 
 
+# Words that say what kind of upload it is, not what the song is called. A bracketed part
+# (or a "| ..." tail) made only of these is dropped from displayed titles.
+_TAG_WORDS = {
+    "official", "offcial", "music", "video", "audio", "lyric", "lyrics", "visualizer",
+    "visualiser", "mv", "m/v", "hd", "hq", "4k", "8k", "1080p", "720p", "full", "version",
+    "ver", "m", "v", "clip", "teaser", "color", "coded", "sub", "subs", "thai", "eng", "with", "and",
+    "เนื้อเพลง", "คาราโอเกะ", "ซับไทย",
+}
+_BRACKETS = re.compile(r"\s*[(\[【「『〔]([^()\[\]【】「」『』〔〕]*)[)\]】」』〕]")
+_PIPE_TAIL = re.compile(r"\s*[|｜]\s*([^|｜]*)$")
+
+
+def _only_tags(text: str) -> bool:
+    words = [w for w in re.split(r"[\s,.&+/:-]+", text.casefold()) if w]
+    return bool(words) and all(w in _TAG_WORDS for w in words)
+
+
+def clean_title(title: str) -> str:
+    """'Song (Official Music Video) [4K]' -> 'Song'. Keeps (Live), (Remix), (feat. X)..."""
+    out = _BRACKETS.sub(lambda m: "" if _only_tags(m.group(1)) else m.group(0), title)
+    while (tail := _PIPE_TAIL.search(out)) and _only_tags(tail.group(1)):
+        out = out[:tail.start()]
+    out = re.sub(r"\s{2,}", " ", out).strip(" -–—|｜")
+    return out or title
+
+
 @dataclass
 class Track:
     title: str
@@ -101,6 +127,11 @@ class Track:
 
     def fmt_duration(self) -> str:
         return fmt_time(self.duration) if self.duration else "LIVE/?"
+
+    @property
+    def name(self) -> str:
+        """Title for display, without "(Official Video)" and similar tags."""
+        return clean_title(self.title)
 
     @property
     def video_id(self) -> Optional[str]:
