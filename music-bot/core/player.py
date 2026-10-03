@@ -855,7 +855,16 @@ class GuildPlayer:
         else:
             await asyncio.sleep(2)
 
+    def _log_audio(self, track: Track):
+        """Late audio frames this song had: the bot was too busy to send sound on time."""
+        src = self._source
+        late = getattr(src, "late_frames", 0)
+        if late:
+            log.info("[%s] Audio: %d late frame(s) in %s, worst %.0f ms", self.guild.id, late,
+                     track.title[:60], getattr(src, "late_worst", 0.0) * 1000)
+
     async def _after_track(self, track: Track):
+        self._log_audio(track)
         if self._restart_at is not None:
             self._pending_start = self._restart_at
             self._restart_at = None

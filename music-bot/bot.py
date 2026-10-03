@@ -3,6 +3,7 @@
 import asyncio
 import logging
 import os
+from logging.handlers import RotatingFileHandler
 import signal
 import sys
 import time
@@ -73,6 +74,7 @@ class MusicBot(commands.Bot):
         await self._start_health()
         ratelimit.install()
         sources.warm_workers()
+        card.warm_worker()
         self.restart_requested = False
         self._updater = asyncio.create_task(updater.loop(self))
         try:
@@ -169,7 +171,26 @@ class MusicBot(commands.Bot):
         await self.db.close()
 
 
+def setup_log_file():
+    """Also write the log to LOG_FILE (rotating), so it can be sent for help. Only the
+    main process does this: worker processes re-import this module."""
+    if not config.LOG_FILE:
+        return
+    try:
+        os.makedirs(os.path.dirname(config.LOG_FILE) or ".", exist_ok=True)
+        handler = RotatingFileHandler(config.LOG_FILE, maxBytes=config.LOG_MAX_MB * 1024 * 1024,
+                                      backupCount=config.LOG_BACKUPS, encoding="utf-8")
+    except OSError as exc:
+        log.warning("Cannot write the log file %s: %s", config.LOG_FILE, exc)
+        return
+    handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s"))
+    logging.getLogger().addHandler(handler)
+    sys.excepthook = lambda *exc: log.critical("Crashed", exc_info=exc)  # crashes go in too
+    log.info("Log file: %s", os.path.abspath(config.LOG_FILE))
+
+
 def main():
+    setup_log_file()
     if not config.TOKEN:
         raise SystemExit("DISCORD_TOKEN missing. Copy .env.example to .env and fill it.")
     if not config.FFMPEG:

@@ -220,6 +220,8 @@ python bot.py
 | `YTDLP_COOKIES` | — | ไฟล์ cookies.txt เมื่อ YouTube ขอยืนยันว่าไม่ใช่บอท |
 | `AUTOCOMPLETE` | `true` | ค้นหาสดระหว่างพิมพ์ `/play` |
 | `YTDL_TIMEOUT` | `45` | เวลาสูงสุดต่อการค้นหนึ่งครั้ง (วินาที) |
+| `LOG_FILE` | `data/logs/bot.log` | เก็บ log ลงไฟล์ด้วย (หมุนไฟล์ทุก `LOG_MAX_MB`=5 MB เก็บย้อนหลัง `LOG_BACKUPS`=3 ไฟล์, ว่าง = ปิด) |
+| `CARD_PROCESS` | `true` | วาดการ์ดใน process แยกที่ priority ต่ำ เสียงไม่กระตุกตอนวาดการ์ด |
 | `YTDL_PROCESSES` | `2` | ค้นเพลงด้วย yt-dlp ใน process แยก เสียงไม่กระตุกตอนมีคนเพิ่มเพลง (`0` = ใช้ thread แบบเดิม) |
 | `YTDL_DEBUG` | `false` | log ของ yt-dlp แบบละเอียด |
 | `FFMPEG_PATH` | อัตโนมัติ | path ของ ffmpeg |
@@ -301,6 +303,7 @@ python bot.py
 |---|---|
 | `/help [start]` | คำสั่งทั้งหมด หรือวิธีเริ่มต้นใช้งาน 3 ขั้น |
 | `/ping` · `/about` | ความเร็วและข้อมูลบอท |
+| `/logs` | (เจ้าของบอท) ส่งไฟล์ log ล่าสุดแบบเห็นคนเดียว ไว้ส่งต่อให้คนช่วยดูปัญหา |
 | `/log` | ดูว่าใครทำอะไรกับบอทล่าสุด |
 | `/birthday set` · `/birthday remove` | ตั้งวันเกิดเพื่อรับป้ายบนการ์ด |
 </details>

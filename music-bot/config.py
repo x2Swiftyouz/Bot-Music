@@ -35,6 +35,10 @@ DEFAULT_VOLUME = _int("DEFAULT_VOLUME", 50)
 # yt-dlp
 AUTOCOMPLETE = _bool("AUTOCOMPLETE", True)       # live search while typing /play
 YTDL_TIMEOUT = _int("YTDL_TIMEOUT", 45)       # seconds per extraction
+LOG_FILE = os.getenv("LOG_FILE", "data/logs/bot.log")  # "" = console only
+LOG_MAX_MB = max(_int("LOG_MAX_MB", 5), 1)       # per file; LOG_BACKUPS older files are kept
+LOG_BACKUPS = max(_int("LOG_BACKUPS", 3), 0)
+CARD_PROCESS = _bool("CARD_PROCESS", True)     # draw cards in a worker process (no stutter)
 YTDL_PROCESSES = _int("YTDL_PROCESSES", 2)    # yt-dlp worker processes (0 = threads, old way)
 YTDL_DEBUG = _bool("YTDL_DEBUG", False)         # verbose yt-dlp log
 YTDLP_COOKIES = os.getenv("YTDLP_COOKIES") or None

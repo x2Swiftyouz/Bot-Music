@@ -1,6 +1,8 @@
 """/help (category menu), /ping, /about."""
 
+import io
 import logging
+import os
 import platform
 import time
 
@@ -126,6 +128,9 @@ def about_embed(bot) -> discord.Embed:
     return e
 
 
+LOG_SEND_LIMIT = 7 * 1024 * 1024  # Discord's upload limit for bots is 8 MB (no boost)
+
+
 class Info(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
@@ -158,6 +163,26 @@ class Info(commands.Cog):
     @app_commands.command(description="ข้อมูลบอท")
     async def about(self, inter: discord.Interaction):
         await inter.response.send_message(embed=about_embed(self.bot))
+
+    @app_commands.command(description="(เจ้าของบอท) ส่งไฟล์ log ล่าสุด ไว้ส่งต่อให้คนช่วยดูปัญหา")
+    async def logs(self, inter: discord.Interaction):
+        if not await self.bot.is_owner(inter.user):
+            return await inter.response.send_message("คำสั่งนี้สำหรับเจ้าของบอทเท่านั้น",
+                                                     ephemeral=True)
+        path = config.LOG_FILE
+        if not path or not os.path.exists(path):
+            return await inter.response.send_message(
+                "ยังไม่มีไฟล์ log (ตั้ง `LOG_FILE` ใน .env)", ephemeral=True)
+        size = os.path.getsize(path)
+        with open(path, "rb") as fh:
+            if size > LOG_SEND_LIMIT:  # the newest part is what matters
+                fh.seek(size - LOG_SEND_LIMIT)
+                fh.readline()  # start on a whole line
+            data = fh.read()
+        note = f" (เฉพาะ {len(data) // 1024} KB ล่าสุด)" if size > LOG_SEND_LIMIT else ""
+        await inter.response.send_message(
+            f"📄 log ของบอท{note}", ephemeral=True,
+            file=discord.File(io.BytesIO(data), filename="bot-log.txt"))
 
 
 async def setup(bot):

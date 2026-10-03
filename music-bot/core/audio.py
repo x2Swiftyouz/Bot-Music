@@ -1,6 +1,7 @@
 """Smooth volume: ramps gain frame by frame instead of jumping (no clicks, no gaps)."""
 
 import array
+import logging
 import sys
 import threading
 import time
@@ -15,6 +16,8 @@ except ImportError:  # pragma: no cover
 
 FRAME_MS = 20
 LATE = 0.06  # seconds behind schedule before the sender stops trying to catch up
+log = logging.getLogger("musicbot.audio")
+_last_late_log = 0.0
 
 
 def keep_pace(source) -> None:
@@ -34,6 +37,12 @@ def keep_pace(source) -> None:
         if now - due > LATE:
             player._start = now - player.DELAY * player.loops
             source.late_frames = getattr(source, "late_frames", 0) + 1
+            source.late_worst = max(getattr(source, "late_worst", 0.0), now - due)
+            global _last_late_log
+            if now - _last_late_log > 2:  # at most one line every 2 s
+                _last_late_log = now
+                log.info("Audio late by %.0f ms (frame %d): the bot was busy", (now - due) * 1000,
+                         player.loops)
     except AttributeError:  # another discord.py version: leave its timing alone
         source._mb_player = None
 

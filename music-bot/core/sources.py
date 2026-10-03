@@ -4,10 +4,11 @@ import asyncio
 import base64
 import functools
 import logging
+import multiprocessing
+import os
+import pickle
 import re
 import time
-import multiprocessing
-import pickle
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
 from concurrent.futures.process import BrokenProcessPool
 from dataclasses import asdict, dataclass, field
@@ -219,6 +220,15 @@ def _ready() -> bool:
     return True
 
 
+def lower_priority():
+    """Worker processes run at a lower CPU priority: on a small server the music (FFmpeg and
+    the bot's audio thread) always gets the CPU first."""
+    try:
+        os.nice(10)
+    except (AttributeError, OSError):  # Windows / not allowed
+        pass
+
+
 # Separate thread pools: autocomplete spam must never block playback lookups.
 PLAY_POOL = ThreadPoolExecutor(max_workers=4, thread_name_prefix="ytdl-play")
 SEARCH_POOL = ThreadPoolExecutor(max_workers=2, thread_name_prefix="ytdl-search")
@@ -238,7 +248,8 @@ def _process_pool(kind: str) -> Optional[ProcessPoolExecutor]:
     if kind not in _procs:
         workers = config.YTDL_PROCESSES if kind == "play" else 1
         _procs[kind] = ProcessPoolExecutor(
-            max_workers=workers, mp_context=multiprocessing.get_context("spawn"))
+            max_workers=workers, mp_context=multiprocessing.get_context("spawn"),
+            initializer=lower_priority)
     return _procs[kind]
 
 

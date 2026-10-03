@@ -9,11 +9,16 @@ import io
 import itertools
 import logging
 import math
+import multiprocessing
 import os
+import pickle
 import random
+import time
 import unicodedata
 import zlib
 from collections import Counter, OrderedDict
+from concurrent.futures import ProcessPoolExecutor
+from concurrent.futures.process import BrokenProcessPool
 from dataclasses import dataclass
 from typing import Optional
 
@@ -549,6 +554,7 @@ BASE_CACHE_SIZE = 32  # several servers playing at once must not evict each othe
 
 
 _accents: "OrderedDict[str, int]" = OrderedDict()
+SLOW_RENDER = 0.8  # seconds: log cards slower than this (helps find stutter causes)
 
 
 def accent_of(track: Track) -> Optional[int]:
@@ -973,7 +979,7 @@ def _encode_eq(canvas: Image.Image, spot, glow=None) -> bytes:
         frames.append(frame.convert("RGB"))
     out = io.BytesIO()
     frames[0].save(out, "WEBP", save_all=True, append_images=frames[1:], duration=EQ_FRAME_MS,
-                   loop=0, quality=82, method=4, minimize_size=False)
+                   loop=0, quality=82, method=2, minimize_size=False)  # 2: ~40% less CPU
     return out.getvalue()
 
 
@@ -1285,7 +1291,7 @@ def render_quote(lines: list[str], track: Track, art_bytes: Optional[bytes]) -> 
 async def make_quote_card(lines: list[str], track: Track) -> Optional[bytes]:
     try:
         art = await fetch_track_art(track)
-        return await _run(lambda: render_quote(lines, track, art))
+        return await _run(render_quote, list(lines), track, art)
     except Exception as exc:
         log.warning("quote card failed: %s", exc)
         return None
@@ -1418,6 +1424,7 @@ def _http() -> aiohttp.ClientSession:
 
 
 async def close():
+    close_worker()
     if _session and not _session.closed:
         await _session.close()
 
@@ -1452,9 +1459,79 @@ async def fetch_track_art(track: Track) -> Optional[bytes]:
     return await fetch_art(track.thumbnail)
 
 
-async def _run(fn):
+# Drawing a card is a few hundred ms of CPU (12 animated frames). In a thread it competes
+# with the audio sender for Python's lock (GIL) and the music stutters, e.g. when someone
+# changes the volume. A worker process draws instead; falls back to threads if processes
+# do not work on this system. The worker keeps its own caches (backgrounds, fonts).
+_pool: Optional[ProcessPoolExecutor] = None
+_pool_broken = False
+
+
+def _card_pool() -> Optional[ProcessPoolExecutor]:
+    global _pool
+    if _pool_broken or not config.CARD_PROCESS:
+        return None
+    if _pool is None:
+        from core.sources import lower_priority
+        _pool = ProcessPoolExecutor(max_workers=1, mp_context=multiprocessing.get_context("spawn"),
+                                    initializer=lower_priority)
+    return _pool
+
+
+def _ready() -> bool:
+    return True
+
+
+def warm_worker():
+    """Start the card process now (Pillow, fonts), not on the first song."""
+    pool = _card_pool()
+    if pool:
+        pool.submit(_ready)
+
+
+def close_worker():
+    global _pool
+    if _pool:
+        _pool.shutdown(wait=False, cancel_futures=True)
+        _pool = None
+
+
+async def _run(func, *args):
+    """func(*args) in the card process (or a thread). func must be a module function."""
+    global _pool_broken
     loop = asyncio.get_running_loop()
-    return await asyncio.wait_for(loop.run_in_executor(None, fn), timeout=8)
+    pool = _card_pool()
+    if pool is not None:
+        try:
+            return await asyncio.wait_for(
+                loop.run_in_executor(pool, functools.partial(func, *args)), timeout=20)
+        except (BrokenProcessPool, pickle.PicklingError) as exc:
+            log.warning("card process failed (%s: %s), drawing in threads instead",
+                        type(exc).__name__, exc)
+            _pool_broken = True
+            close_worker()
+    return await asyncio.wait_for(
+        loop.run_in_executor(None, functools.partial(func, *args)), timeout=8)
+
+
+def _job_render(track, art, state, next_art, avatar):
+    """In the card process: the card, plus the cover colour the bot uses for the panel."""
+    started = time.perf_counter()
+    data = render(track, art, state, next_art, avatar)
+    return data, _accents.get(track.url), time.perf_counter() - started
+
+
+def _job_warm(track, art, g, theme, avatar, night):
+    _render_base(track, art, g, theme, avatar, night)
+    return _accents.get(track.url)
+
+
+def _remember_accent(track: Track, accent: Optional[int]):
+    if accent is not None:
+        _accents[track.url] = accent
+        _accents.move_to_end(track.url)
+        while len(_accents) > 200:
+            _accents.popitem(last=False)
 
 
 async def make_card(track: Track, state: CardState = CardState()) -> Optional[bytes]:
@@ -1462,9 +1539,14 @@ async def make_card(track: Track, state: CardState = CardState()) -> Optional[by
         art, next_art, avatar = await asyncio.gather(
             fetch_track_art(track), fetch_art(state.next_thumb or None),
             fetch_art(state.avatar or None))
-        return await _run(lambda: render(track, art, state, next_art, avatar))
+        data, accent, took = await _run(_job_render, track, art, state, next_art, avatar)
+        _remember_accent(track, accent)
+        if took > SLOW_RENDER:
+            log.info("card took %.2fs to draw (%s%s)", took, state.layout,
+                     ", animated" if state.animate else "")
+        return data
     except Exception as exc:
-        log.warning("card render failed: %s", exc)
+        log.warning("card render failed: %r", exc)
         return None
 
 
@@ -1474,8 +1556,9 @@ async def warm(track: Track, theme: str, layout: str, avatar: str = "", night: b
     try:
         art, av = await asyncio.gather(fetch_track_art(track), fetch_art(avatar or None))
         g = GEOS.get(layout, WIDE)
-        await _run(lambda: _render_base(track, art, g, theme if theme in THEMES else "blur",
-                                        None if g is MINI else av, night))
+        accent = await _run(_job_warm, track, art, g, theme if theme in THEMES else "blur",
+                            None if g is MINI else av, night)
+        _remember_accent(track, accent)
     except Exception as exc:
         log.debug("card warm-up failed: %s", exc)
 
@@ -1484,7 +1567,7 @@ async def make_queue_card(rows: list[dict], header: str, sub: str,
                           thumbs: list[Track]) -> Optional[bytes]:
     try:
         arts = await asyncio.gather(*(fetch_track_art(t) for t in thumbs))
-        return await _run(lambda: render_queue(rows, header, sub, list(arts)))
+        return await _run(render_queue, rows, header, sub, list(arts))
     except Exception as exc:
         log.warning("queue card failed: %s", exc)
         return None
@@ -1496,7 +1579,7 @@ async def make_summary(plays: list[dict]) -> Optional[bytes]:
         tracks = [Track(title=p["title"], url=p["url"], thumbnail=p.get("thumbnail"),
                         origin=p.get("origin") or "youtube") for p, _ in stats["top_tracks"]]
         arts = await asyncio.gather(*(fetch_track_art(t) for t in tracks))
-        return await _run(lambda: render_summary(stats, list(arts)))
+        return await _run(render_summary, stats, list(arts))
     except Exception as exc:
         log.warning("summary render failed: %s", exc)
         return None
