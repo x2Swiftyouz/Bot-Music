@@ -201,6 +201,7 @@ class GuildPlayer:
         self._last_played: Optional[Track] = None
         self.request_channel_id = settings.get("request_channel") or 0
         self.request_message_id = settings.get("request_message") or 0
+        self._header_card = False  # the request header shows a card (unknown at start: no)
         self.live_lyrics = False      # karaoke line on the panel
         self.lyrics = None            # Lyrics of the current track (live lyrics mode)
         self.lyrics_url: Optional[str] = None  # track the lyrics belong to (set when done)
@@ -1373,17 +1374,28 @@ class GuildPlayer:
                 await self.panel_message.delete()  # panel left in another channel
             except discord.HTTPException:
                 pass
+        if self.request_message_id and card is not None and not self._header_card:
+            # The header has no picture now (idle). Discord's app often does not show a
+            # picture that an edit adds to such a message until the channel is opened
+            # again, so the first card goes into a fresh header instead.
+            try:
+                await channel.get_partial_message(self.request_message_id).delete()
+            except discord.HTTPException:
+                pass
+            self.request_message_id = 0
         if self.request_message_id:
             msg = channel.get_partial_message(self.request_message_id)
             try:
                 await msg.edit(content=None, embed=embed, view=view, allowed_mentions=NO_PINGS,
                                attachments=[card] if card else [])
+                self._header_card = card is not None
                 return msg
             except discord.NotFound:
                 pass
         msg = await channel.send(embed=embed, view=view, allowed_mentions=NO_PINGS,
                                  **({"file": card} if card else {}))
         clock.observe(msg)
+        self._header_card = card is not None
         self.request_message_id = msg.id
         await self.bot.db.set_setting(self.guild.id, "request_message", msg.id)
         return msg
@@ -1507,6 +1519,7 @@ class GuildPlayer:
                     from core.ui import RequestIdleView, build_request_idle_embed
                     await self.panel_message.edit(embed=build_request_idle_embed(),
                                                   view=RequestIdleView(), attachments=[])
+                    self._header_card = False
                 else:
                     from core.ui import IdleView
                     recap, self._end_recap = self._end_recap, []
