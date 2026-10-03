@@ -905,8 +905,8 @@ def _draw_label(canvas: Image.Image, g: Geo, st: CardState, track: Track, accent
 
 # Equalizer next to "กำลังเล่น": bar heights (0..1) per frame, a short seamless loop.
 EQ_STILL = (0.55, 0.9, 0.4, 0.75)
-EQ_FRAMES = 12
-EQ_FRAME_MS = 110
+EQ_FRAMES = 8      # 8 frames: a third less CPU than 12, and still smooth
+EQ_FRAME_MS = 165
 
 
 def _eq_frame(i: int) -> tuple:

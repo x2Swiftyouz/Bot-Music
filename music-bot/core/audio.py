@@ -15,7 +15,11 @@ except ImportError:  # pragma: no cover
     audioop = None
 
 FRAME_MS = 20
-LATE = 0.06  # seconds behind schedule before the sender stops trying to catch up
+# A frame a little late (under STALL) is caught up the normal discord.py way: the listener's
+# app buffers the few quick frames and plays them smoothly. Only a long stall is not caught
+# up, since several hundred ms sent at once is heard as a fast-forward.
+SLOW = 0.06    # seconds late worth noting in the log
+STALL = 0.25   # seconds late: move the schedule instead of catching up
 log = logging.getLogger("musicbot.audio")
 _last_late_log = 0.0
 
@@ -34,15 +38,21 @@ def keep_pace(source) -> None:
     try:
         due = player._start + player.DELAY * player.loops
         now = time.perf_counter()
-        if now - due > LATE:
+        late = now - due
+        if late <= SLOW:
+            return
+        if player.loops == 0:  # FFmpeg starting the song: just start the clock now
+            player._start = now
+            return
+        if late > STALL:
             player._start = now - player.DELAY * player.loops
-            source.late_frames = getattr(source, "late_frames", 0) + 1
-            source.late_worst = max(getattr(source, "late_worst", 0.0), now - due)
-            global _last_late_log
-            if now - _last_late_log > 2:  # at most one line every 2 s
-                _last_late_log = now
-                log.info("Audio late by %.0f ms (frame %d): the bot was busy", (now - due) * 1000,
-                         player.loops)
+        source.late_frames = getattr(source, "late_frames", 0) + 1
+        source.late_worst = max(getattr(source, "late_worst", 0.0), late)
+        global _last_late_log
+        if now - _last_late_log > 2:  # at most one line every 2 s
+            _last_late_log = now
+            log.info("Audio late by %.0f ms (frame %d): the bot was busy%s", late * 1000,
+                     player.loops, "" if late > STALL else ", caught up")
     except AttributeError:  # another discord.py version: leave its timing alone
         source._mb_player = None
 

@@ -189,8 +189,37 @@ def setup_log_file():
     log.info("Log file: %s", os.path.abspath(config.LOG_FILE))
 
 
+def cpu_info() -> str:
+    """Cores, and the CPU limit of the container if there is one (cgroup v2 or v1):
+    a tight limit makes the music stutter while cards are drawn."""
+    text = f"{os.cpu_count() or '?'} cores"
+    limit = None
+    try:
+        with open("/sys/fs/cgroup/cpu.max") as fh:
+            quota, period = fh.read().split()[:2]
+            if quota != "max":
+                limit = int(quota) / int(period)
+    except (OSError, ValueError):
+        try:
+            with open("/sys/fs/cgroup/cpu/cpu.cfs_quota_us") as fq, \
+                    open("/sys/fs/cgroup/cpu/cpu.cfs_period_us") as fp:
+                quota = int(fq.read())
+                if quota > 0:
+                    limit = quota / int(fp.read())
+        except (OSError, ValueError):
+            pass
+    if limit is not None:
+        text += f", container limited to {limit:.2f} CPU"
+    try:
+        text += ", load %.2f %.2f %.2f" % os.getloadavg()
+    except (AttributeError, OSError):
+        pass
+    return text
+
+
 def main():
     setup_log_file()
+    log.info("CPU: %s", cpu_info())
     if not config.TOKEN:
         raise SystemExit("DISCORD_TOKEN missing. Copy .env.example to .env and fill it.")
     if not config.FFMPEG:
