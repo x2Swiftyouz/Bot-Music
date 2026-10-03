@@ -252,6 +252,7 @@ class GuildPlayer:
         self._next = asyncio.Event()
         self._wake = asyncio.Event()
         self._task = asyncio.create_task(self._player_loop())
+        self._soon: Optional[asyncio.Task] = None  # pending panel_soon() refresh
         self._panel_task = asyncio.create_task(self._panel_loop())
         self._save_task = asyncio.create_task(self._save_loop())
         self._watchdog_task = asyncio.create_task(self._watchdog_loop())
@@ -334,7 +335,22 @@ class GuildPlayer:
         self._wake.set()
         if tracks:
             asyncio.create_task(self.save_state())
+            self.panel_soon()  # "next" on the card, the 📜 count
         return len(tracks)
+
+    PANEL_SOON = 1.0  # seconds: songs added together share one panel edit
+
+    def panel_soon(self):
+        """Refresh the panel shortly (the queue changed). Not a timer tick: it is never
+        skipped, so the new "next" song shows at once instead of on a later tick."""
+        if self._soon and not self._soon.done():
+            return
+
+        async def run():
+            await asyncio.sleep(self.PANEL_SOON)
+            if not self.destroyed and self.current:
+                await self.update_panel()
+        self._soon = asyncio.create_task(run())
 
     def _insert_fair(self, track: Track):
         """Fair queue: a requester's n-th waiting song goes after everyone's n-th song, so
@@ -1580,7 +1596,7 @@ class GuildPlayer:
         if self._tail:
             self._drop_tail(self._tail)
             self._tail = None
-        for task in (self._panel_task, self._save_task, self._watchdog_task,
+        for task in (self._panel_task, self._soon, self._save_task, self._watchdog_task,
                      self._preload_task):
             if task and task is not me and not task.done():
                 task.cancel()
