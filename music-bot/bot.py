@@ -205,26 +205,11 @@ def code_version() -> str:
 
 
 def cpu_info() -> str:
-    """Cores, and the CPU limit of the container if there is one (cgroup v2 or v1):
-    a tight limit makes the music stutter while cards are drawn."""
+    """Cores, and the CPU limit of the container if there is one: a tight limit makes the
+    music stutter while cards are drawn (see config.LOW_CPU)."""
     text = f"{os.cpu_count() or '?'} cores"
-    limit = None
-    try:
-        with open("/sys/fs/cgroup/cpu.max") as fh:
-            quota, period = fh.read().split()[:2]
-            if quota != "max":
-                limit = int(quota) / int(period)
-    except (OSError, ValueError):
-        try:
-            with open("/sys/fs/cgroup/cpu/cpu.cfs_quota_us") as fq, \
-                    open("/sys/fs/cgroup/cpu/cpu.cfs_period_us") as fp:
-                quota = int(fq.read())
-                if quota > 0:
-                    limit = quota / int(fp.read())
-        except (OSError, ValueError):
-            pass
-    if limit is not None:
-        text += f", container limited to {limit:.2f} CPU"
+    if config.CPU_LIMIT is not None:
+        text += f", container limited to {config.CPU_LIMIT:.2f} CPU"
     try:
         text += ", load %.2f %.2f %.2f" % os.getloadavg()
     except (AttributeError, OSError):
@@ -236,6 +221,10 @@ def main():
     setup_log_file()
     log.info("Code version %s · Python %s", code_version(), sys.version.split()[0])
     log.info("CPU: %s", cpu_info())
+    if config.LOW_CPU:
+        log.info("Low-CPU mode: cards move only at the start of a song (CARD_ANIMATION=%s) "
+                 "and refresh every %ss. Give the bot 1 CPU or more for the full animation.",
+                 config.CARD_ANIMATION, config.CARD_REFRESH)
     if not config.TOKEN:
         raise SystemExit("DISCORD_TOKEN missing. Copy .env.example to .env and fill it.")
     if not config.FFMPEG:

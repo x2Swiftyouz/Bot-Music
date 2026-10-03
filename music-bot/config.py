@@ -19,6 +19,32 @@ def _bool(name: str, default: bool) -> bool:
     return os.getenv(name, str(default)).strip().lower() in ("1", "true", "yes", "on")
 
 
+def _cpu_limit():
+    """CPUs this container may use (cgroup v2 or v1), or None when not limited."""
+    try:
+        with open("/sys/fs/cgroup/cpu.max") as fh:
+            quota, period = fh.read().split()[:2]
+            return None if quota == "max" else int(quota) / int(period)
+    except (OSError, ValueError):
+        pass
+    try:
+        with open("/sys/fs/cgroup/cpu/cpu.cfs_quota_us") as fq, \
+                open("/sys/fs/cgroup/cpu/cpu.cfs_period_us") as fp:
+            quota = int(fq.read())
+            return quota / int(fp.read()) if quota > 0 else None
+    except (OSError, ValueError):
+        return None
+
+
+CPU_LIMIT = _cpu_limit()
+# Low-CPU mode (auto when the bot may use less than one CPU): drawing a moving card every
+# few seconds would take the CPU the music needs. Cards then move only at the start of a
+# song and refresh every 20 s. LOW_CPU=true / false forces it on or off.
+_low = os.getenv("LOW_CPU", "auto").strip().lower()
+LOW_CPU = ((CPU_LIMIT is not None and CPU_LIMIT < 1.0) or (os.cpu_count() or 2) < 2
+           if _low == "auto" else _low in ("1", "true", "yes", "on"))
+
+
 TOKEN = os.getenv("DISCORD_TOKEN", "")
 DB_PATH = os.getenv("DB_PATH", "data/musicbot.db")
 
@@ -69,10 +95,11 @@ PREFIX = os.getenv("PREFIX", "!")
 OWNER_ID = _int("OWNER_ID", 0)
 PLAYLIST_LIMIT = _int("PLAYLIST_LIMIT", 10)       # playlists per user
 MUSIC_CARD = _bool("MUSIC_CARD", True)           # image card on now playing
-CARD_REFRESH = _int("CARD_REFRESH", 10)          # seconds between card re-uploads while playing
+CARD_REFRESH = _int("CARD_REFRESH", 20 if LOW_CPU else 10)  # seconds between card re-uploads
 # Moving equalizer on the card (animated WebP): always | start (only a song's first card,
 # so Discord's "GIF" label goes away) | off
-CARD_ANIMATION = os.getenv("CARD_ANIMATION", "always" if _bool("CARD_ANIMATED", True) else "off")
+CARD_ANIMATION = os.getenv("CARD_ANIMATION", "off" if not _bool("CARD_ANIMATED", True)
+                           else "start" if LOW_CPU else "always")
 CARD_ANIMATION = CARD_ANIMATION.strip().lower()
 CARD_ANIMATION_SECONDS = 8  # "start": cards drawn in the first seconds of a song move
 YTDLP_UPDATE_HOURS = _int("YTDLP_UPDATE_HOURS", 24)  # check for a new yt-dlp (0 = off)

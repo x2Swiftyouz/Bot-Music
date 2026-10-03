@@ -1034,7 +1034,7 @@ def _encode(canvas: Image.Image) -> bytes:
     out = io.BytesIO()
     img = canvas.convert("RGB")
     if EXT == "webp":
-        img.save(out, "WEBP", quality=82, method=4)
+        img.save(out, "WEBP", quality=82, method=2)  # 2: much less CPU, about the same size
     else:
         img.save(out, "JPEG", quality=88, optimize=True)
     return out.getvalue()
