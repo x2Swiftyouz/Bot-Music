@@ -142,6 +142,18 @@ STICKY_MIN_GAP = 20
 STOP_FADE_MS = 900  # ⏹ and leaving fade out at least this long
 SEEK_CROSSFADE_MS = 400  # a seek overlaps the song with itself: short, or it sounds doubled
 QUEUE_RECAP_MIN = 2  # songs in a queue run before "queue ended" shows a recap card
+# 🎛️ sound effects: key -> (name, emoji, FFmpeg filters, playback speed). Speed changes
+# come from resampling (asetrate), so the pitch moves with it, like the real thing.
+EFFECTS = {
+    "off": ("ปกติ", "🎵", "", 1.0),
+    "bass": ("Bass boost", "🔈", "bass=g=8:f=110:w=0.7,volume=-3dB", 1.0),
+    "nightcore": ("Nightcore", "⚡", "aresample=48000,asetrate=60000,aresample=48000", 1.25),
+    "slowed": ("Slowed + Reverb", "🌧️",
+               "aresample=48000,asetrate=40800,aresample=48000,"
+               "aecho=0.8:0.85:60|120:0.3|0.2", 0.85),
+    "8d": ("8D", "🎧", "apulsator=hz=0.09", 1.0),
+}
+
 ENDING_SECONDS = 10  # the card shows the next song this long before the end
 QUEUE_LOW_SECONDS = 60  # nothing queued, no autoplay: the card warns this long before the end
 HOT_PART = 0.85  # heatmap level (of the peak) that counts as the hit part (= card.HOT_LEVEL)
@@ -194,6 +206,7 @@ class GuildPlayer:
         self.card_theme = settings.get("card_theme") or "blur"
         self.card_layout = settings.get("card_layout") or "wide"
         self.normalize = bool(settings.get("normalize"))
+        self.effect = "off"  # 🎛️ EFFECTS key, for this session only
         self.auto_clean = bool(settings.get("auto_clean"))
         self.autoplay = bool(settings.get("autoplay"))  # 📻 similar songs when the queue ends
         self.fair_queue = bool(settings.get("fair_queue"))  # ⚖️ requesters take turns
@@ -282,9 +295,14 @@ class GuildPlayer:
             return 0.0
         frames = getattr(self._source, "frames", None)
         if frames is not None:  # real audio progress: 20 ms per frame sent
-            return self._start_at + frames * 0.02
+            return self._start_at + frames * 0.02 * self.speed
         now = self._paused_at or time.monotonic()
-        return self._start_at + (now - self._started - self._paused_total)
+        return self._start_at + (now - self._started - self._paused_total) * self.speed
+
+    @property
+    def speed(self) -> float:
+        """Song seconds per real second (Nightcore plays faster, Slowed slower)."""
+        return EFFECTS.get(self.effect, EFFECTS["off"])[3]
 
     def humans_in_channel(self) -> list[discord.Member]:
         if not self.vc or not self.vc.channel:
@@ -306,7 +324,7 @@ class GuildPlayer:
             if not t.duration:
                 return None
             total += t.duration
-        return int(total)
+        return int(total / self.speed)
 
     def queue_seconds(self) -> int:
         """Length of the waiting songs (0 when one has no known length, e.g. a live)."""
@@ -315,7 +333,7 @@ class GuildPlayer:
             if not t.duration:
                 return 0
             total += t.duration
-        return total
+        return int(total / self.speed)
 
     def total_remaining(self) -> Optional[int]:
         return self.eta(len(self.queue))
@@ -734,6 +752,9 @@ class GuildPlayer:
         else:
             before = FFMPEG_BEFORE + (f" -ss {start:.2f}" if start > 0 else "")
         chain = []
+        effect = EFFECTS.get(self.effect, EFFECTS["off"])[2]
+        if effect:
+            chain.append(effect)
         if self.normalize and config.NORMALIZE_FILTER:
             chain.append(config.NORMALIZE_FILTER)
         if start == 0:
@@ -768,7 +789,7 @@ class GuildPlayer:
         return src
 
     def audio_signature(self) -> str:
-        return f"{OPUS_LOADED or self.gain}|{self.normalize}"
+        return f"{OPUS_LOADED or self.gain}|{self.normalize}|{self.effect}"
 
     def set_normalize(self, enabled: bool):
         """Filters are baked into FFmpeg: restart the track in place to apply."""
@@ -778,6 +799,20 @@ class GuildPlayer:
         self._drop_preload()
         if self.current and self.current.duration:
             self.restart_at(self.position)
+
+    def set_effect(self, key: str) -> bool:
+        """🎛️ Switch the sound effect. Filters are baked into FFmpeg, so the song restarts
+        in place (with the seek crossfade). False for an unknown key."""
+        if key not in EFFECTS:
+            return False
+        if key == self.effect:
+            return True
+        pos = self.position
+        self.effect = key
+        self._drop_preload()
+        if self.current and self.current.duration:
+            self.restart_at(pos)
+        return True
 
     @staticmethod
     def close_source(source: discord.AudioSource):
@@ -1032,7 +1067,7 @@ class GuildPlayer:
                 if (self._preload or not self.queue or self.is_paused
                         or self.loop_mode == "track" or not track.duration):
                     continue
-                if track.duration - self.position > self.preload_lead():
+                if (track.duration - self.position) / self.speed > self.preload_lead():
                     continue
                 nxt = self.queue[0]
                 try:
@@ -1197,7 +1232,7 @@ class GuildPlayer:
         t = self.current
         end_clock = ""
         if self.time_format == 2 and t and t.duration:
-            end_clock = clock_after(t.duration - self.position)
+            end_clock = clock_after((t.duration - self.position) / self.speed)
         nxt = self.queue[0] if self.queue else None
         return CardState(
             position=self.position, volume=int(round(self.volume * 100)), loop=self.loop_mode,
@@ -1213,7 +1248,8 @@ class GuildPlayer:
             animate=self._animate(mode), views=t._views if t else 0, year=t._year if t else "",
             night=is_night(), server_icon=self.server_icon_url(),
             listeners=self.listener_avatars(), listener_count=len(self.humans_in_channel()),
-            queue_low=self.queue_low())
+            queue_low=self.queue_low(),
+            effect=EFFECTS[self.effect][0] if self.effect != "off" else "")
 
     def queue_low(self) -> bool:
         """The music is about to stop: under a minute left, nothing queued, nothing to
@@ -1648,7 +1684,7 @@ class GuildPlayer:
             if t and t.duration and not self.is_paused:
                 # wake up right when the "up next" card (or the "almost over" one) is due
                 lead = ENDING_SECONDS if self.queue else QUEUE_LOW_SECONDS
-                until_end = t.duration - self.position - lead
+                until_end = (t.duration - self.position - lead) / self.speed
                 if 0 < until_end < wait:
                     wait = until_end + 0.3
             await asyncio.sleep(wait)

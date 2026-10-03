@@ -52,7 +52,7 @@ def end_timestamp(p: "GuildPlayer") -> Optional[int]:
     t = p.current
     if not t or not t.duration or p.is_paused:
         return None
-    end = int(clock.now() + t.duration - p.position)
+    end = int(clock.now() + (t.duration - p.position) / getattr(p, "speed", 1.0))
     old = getattr(p, "_end_ts", None)
     if old is None or abs(old - end) > END_TS_SLACK:
         p._end_ts = old = end
@@ -190,6 +190,10 @@ def status_line(p: "GuildPlayer") -> str:
         parts.append(f"🎧 {listeners} คนฟังอยู่")
     if p.normalize:
         parts.append("🎚 ความดังเท่ากัน")
+    if getattr(p, "effect", "off") != "off":
+        from core.player import EFFECTS
+        name, emoji, *_ = EFFECTS[p.effect]
+        parts.append(f"{emoji} {name}")
     if p.stay_247:
         parts.append("🌙 24/7")
     if getattr(p, "autoplay", False):  # its switch is inside ⚙️ now
@@ -1184,7 +1188,32 @@ async def _apply_quick(inter, p: "GuildPlayer", key: str) -> tuple[str, bool]:
 
 
 SETTINGS_TEXT = ("### ⚙️ ตั้งค่า\n📻 **Autoplay** ทุกคนกดได้: คิวหมดแล้วเล่นเพลงคล้ายกันต่อเอง\n"
+                 "🎛️ **เอฟเฟกต์เสียง** ทุกคนเลือกได้ ใช้กับทุกเพลงจนกว่าจะเปลี่ยนหรือบอทออกจากห้อง\n"
                  "-# ตั้งค่าเซิร์ฟเวอร์ในเมนูด้านล่างใช้ได้เฉพาะแอดมิน")
+
+
+def _effect_options(p: "GuildPlayer") -> list[discord.SelectOption]:
+    from core.player import EFFECTS
+    now = getattr(p, "effect", "off")
+    return [discord.SelectOption(label=name, value=key, emoji=emoji, default=key == now,
+                                 description=EFFECT_INFO.get(key))
+            for key, (name, emoji, *_) in EFFECTS.items()]
+
+
+EFFECT_INFO = {"off": "เสียงเดิมของเพลง", "bass": "เบสหนักขึ้น",
+               "nightcore": "เร็วขึ้น 1.25 เท่า เสียงสูงขึ้น",
+               "slowed": "ช้าลง เสียงต่ำลง มีเสียงก้อง", "8d": "เสียงวนรอบหัว ใส่หูฟังจะชัดสุด"}
+
+
+def apply_effect(p: "GuildPlayer", key: str) -> str:
+    """Switch the effect; returns what the status line and reply say ({who} = presser)."""
+    from core.player import EFFECTS
+    if not p.set_effect(key):
+        raise UserError("ไม่รู้จักเอฟเฟกต์นี้")
+    name, emoji, *_ = EFFECTS[key]
+    if key == "off":
+        return "🎵 {who} ปิดเอฟเฟกต์เสียง"
+    return f"{emoji} {{who}} เปิดเอฟเฟกต์ {name}"
 
 
 class SettingsView(discord.ui.View):
@@ -1199,6 +1228,7 @@ class SettingsView(discord.ui.View):
         self.autoplay_btn.style = (discord.ButtonStyle.primary if on
                                    else discord.ButtonStyle.secondary)
         self.quick.options = _quick_options(p)
+        self.effect.options = _effect_options(p)
         if not p.is_admin(user):
             self.quick.disabled = True
             self.quick.placeholder = "⚙️ ตั้งค่าเซิร์ฟเวอร์ (เฉพาะแอดมิน)"
@@ -1217,7 +1247,20 @@ class SettingsView(discord.ui.View):
         await self._refresh(inter, text)
         await p.update_panel()
 
-    @discord.ui.select(placeholder="⚙️ ตั้งค่าเซิร์ฟเวอร์ (แอดมิน)", row=1,
+    @discord.ui.select(placeholder="🎛️ เอฟเฟกต์เสียง", row=1,
+                       options=[discord.SelectOption(label="-", value="-")])
+    async def effect(self, inter: discord.Interaction, select: discord.ui.Select):
+        try:
+            p = control(inter)
+            note = apply_effect(p, select.values[0])
+        except UserError as exc:
+            return await inter.response.send_message(str(exc), ephemeral=True)
+        p.note(note.replace("{who}", _who(inter)))
+        await audit_inter(inter, "effect", select.values[0])
+        await self._refresh(inter, note.replace("{who} ", ""))
+        await p.update_panel()
+
+    @discord.ui.select(placeholder="⚙️ ตั้งค่าเซิร์ฟเวอร์ (แอดมิน)", row=2,
                        options=[discord.SelectOption(label="-", value="-")])
     async def quick(self, inter: discord.Interaction, select: discord.ui.Select):
         try:

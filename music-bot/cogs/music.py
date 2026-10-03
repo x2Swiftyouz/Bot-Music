@@ -11,12 +11,12 @@ from discord.ext import commands
 
 import config
 from core.checks import UserError, control, get_player
-from core.player import GuildPlayer
+from core.player import EFFECTS, GuildPlayer
 from core.sources import (Track, fmt_time, parse_time, search_busy, search_choices,
                           search_tracks)
 from core import clean, lyrics
-from core.ui import (LOOP_ICON, LyricsView, QueueView, SearchView, build_added_embed,
-                     build_now_playing, wait_text, who_label)
+from core.ui import (LOOP_ICON, LyricsView, QueueView, SearchView, apply_effect,
+                     build_added_embed, build_now_playing, wait_text, who_label)
 
 log = logging.getLogger("musicbot.music")
 
@@ -261,6 +261,18 @@ class Music(commands.Cog):
         p.set_volume(percent)
         await self.bot.db.set_setting(inter.guild_id, "volume", percent)
         await inter.response.send_message(f"🔊 เสียง {percent}%")
+
+    @app_commands.command(description="เอฟเฟกต์เสียง: Bass boost, Nightcore, Slowed + Reverb, 8D")
+    @app_commands.describe(effect="เลือก ปกติ เพื่อปิดเอฟเฟกต์")
+    @app_commands.choices(effect=[app_commands.Choice(name=f"{v[1]} {v[0]}", value=k)
+                                  for k, v in EFFECTS.items()])
+    @app_commands.guild_only()
+    async def effect(self, inter: discord.Interaction, effect: app_commands.Choice[str]):
+        p = control(inter)
+        note = apply_effect(p, effect.value)
+        p.note(note.replace("{who}", who_label(inter.user)))
+        await inter.response.send_message(note.replace("{who} ", ""))
+        await p.update_panel()
 
     @app_commands.command(description="โหมดวนซ้ำ")
     @app_commands.choices(mode=[app_commands.Choice(name=v, value=k)

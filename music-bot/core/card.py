@@ -382,6 +382,7 @@ class CardState:
     queue_secs: int = 0         # length of the songs waiting (0 = unknown, e.g. a live one)
     listeners: tuple = ()       # avatar URLs of people in the voice channel (a few)
     listener_count: int = 0     # everyone in the voice channel ("+N" for the rest)
+    effect: str = ""            # 🎛️ sound effect name ("Nightcore"), "" = none
     queue_low: bool = False     # last minute, nothing queued, no autoplay: ask for a song
 
 
@@ -681,6 +682,10 @@ def _icon(d: ImageDraw.ImageDraw, kind: str, x: float, cy: float, color, muted=F
         d.polygon([P(2, -8), P(13, -8), P(13, 8), P(7.5, 3.5), P(2, 8)], fill=color)
     elif kind.startswith("flag:"):
         _flag(d, kind[5:], box(0, -6, 17, 6), k)
+    elif kind == "fx":  # mixer sliders
+        for i, knob in enumerate((-3, 3, -1)):
+            d.line(box(2 + i * 6, -7, 2 + i * 6, 7), fill=color, width=w2)
+            d.ellipse(box(i * 6, knob - 2, 4 + i * 6, knob + 2), fill=color)
     elif kind == "cake":
         d.rounded_rectangle(box(0, 0, 16, 7), 2, fill=color)
         d.rectangle(box(7, -6, 9, 0), fill=color)
@@ -1844,6 +1849,8 @@ def render(track: Track, art_bytes: Optional[bytes], st: CardState = CardState()
         _draw_up_next(canvas, g, st.next_title, _open_art(arts[0] if arts else None), accent, bg)
     elif st.mode == "play":
         chips = [_volume_chip(st.volume, soft, chip_text)]
+        if st.effect:
+            chips.append(("fx", st.effect, soft, chip_text, False))
         if st.hot_part:
             chips.append(("hot", "ท่อนฮิต", (255, 122, 26, 215), WHITE, False))
         chapter_now = current_chapter(track, st.position)
