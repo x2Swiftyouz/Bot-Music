@@ -23,7 +23,7 @@ from dataclasses import dataclass
 from typing import Optional
 
 import aiohttp
-from PIL import (Image, ImageChops, ImageDraw, ImageEnhance, ImageFilter, ImageFont, ImageOps,
+from PIL import (Image, ImageDraw, ImageEnhance, ImageFilter, ImageFont, ImageOps,
                  ImageStat, features)
 
 import config
@@ -924,58 +924,12 @@ def _eq(canvas: Image.Image, spot, heights):
         d.rounded_rectangle((bx, cy + full / 2 - bh, bx + bw, cy + full / 2), max(k, 1), fill=color)
 
 
-GLOW_THEMES = ("blur", "solid", "minimal")  # plain square covers (neon has its own glow)
-GLOW_PAD = 40
-_glow_cache: "OrderedDict[tuple, Image.Image]" = OrderedDict()
-
-
-def _glow_layer(g: Geo, color) -> Image.Image:
-    """Soft light around the cover, in the cover's colour. Transparent over the cover
-    itself, so the cover stays sharp. Placed at (art_x - GLOW_PAD, art_y - GLOW_PAD)."""
-    key = (g.art, tuple(color))
-    if key in _glow_cache:
-        return _glow_cache[key]
-    size = g.art + 2 * GLOW_PAD
-    layer = Image.new("RGBA", (size, size), (0, 0, 0, 0))
-    ImageDraw.Draw(layer).rounded_rectangle(
-        (GLOW_PAD - 16, GLOW_PAD - 16, size - GLOW_PAD + 16, size - GLOW_PAD + 16), 38,
-        outline=(*_mix(color, WHITE, 0.55), 255), width=16)  # width grows inwards
-    layer = layer.filter(ImageFilter.GaussianBlur(12))
-    hole = Image.new("L", layer.size, 255)
-    ImageDraw.Draw(hole).rounded_rectangle(
-        (GLOW_PAD, GLOW_PAD, size - GLOW_PAD, size - GLOW_PAD), 24, fill=0)
-    alpha = ImageChops.multiply(layer.getchannel("A"), hole)
-    layer.putalpha(alpha)
-    _glow_cache[key] = layer
-    while len(_glow_cache) > 16:
-        _glow_cache.popitem(last=False)
-    return layer
-
-
-def _add_glow(canvas: Image.Image, glow, strength: float):
-    layer, at = glow
-    if strength < 1:
-        layer = layer.copy()
-        layer.putalpha(layer.getchannel("A").point(lambda v: int(v * strength)))
-    canvas.alpha_composite(layer, at)
-
-
-def _glow_strength(frame: Optional[int] = None) -> float:
-    """Two soft pulses per equalizer loop (frame None = a still card)."""
-    if frame is None:
-        return 0.6
-    return 0.2 + 0.8 * (0.5 + 0.5 * math.sin(4 * math.pi * frame / EQ_FRAMES))
-
-
-def _encode_eq(canvas: Image.Image, spot, glow=None) -> bytes:
-    """Animated WebP: the equalizer (and the cover glow) change between frames."""
+def _encode_eq(canvas: Image.Image, spot) -> bytes:
+    """Animated WebP: only the equalizer changes between frames, so it stays small."""
     frames = []
     for i in range(EQ_FRAMES):
         frame = canvas.copy()
-        heights = _eq_frame(i)
-        if glow:
-            _add_glow(frame, glow, _glow_strength(i))
-        _eq(frame, spot, heights)
+        _eq(frame, spot, _eq_frame(i))
         frames.append(frame.convert("RGB"))
     out = io.BytesIO()
     frames[0].save(out, "WEBP", save_all=True, append_images=frames[1:], duration=EQ_FRAME_MS,
@@ -1194,13 +1148,8 @@ def render(track: Track, art_bytes: Optional[bytes], st: CardState = CardState()
         ratio = min(max(st.position / track.duration, 0), 1)
         _draw_wave(canvas, g, track, ratio, accent, accent2, bg, glow)
         _draw_times(canvas, g, fmt_time(st.position), _right_time(track, st), middle=chapter)
-    glow = None
-    if eq_spot and theme in GLOW_THEMES and g is WIDE:
-        glow = (_glow_layer(g, accent), (g.art_x - GLOW_PAD, g.art_y - GLOW_PAD))
     if eq_spot and st.animate and ANIMATED:
-        return _encode_eq(canvas, eq_spot, glow)
-    if glow:
-        _add_glow(canvas, glow, _glow_strength())
+        return _encode_eq(canvas, eq_spot)
     if eq_spot and st.animate:  # no animation support: still bars
         _eq(canvas, eq_spot, EQ_STILL)
     return _encode(canvas)
