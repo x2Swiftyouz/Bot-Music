@@ -150,6 +150,14 @@ python bot.py
 ```
 บน Linux server ใช้ `musicbot.service` กับ systemd ได้ (อัปเดต yt-dlp และรีสตาร์ทบอทให้อัตโนมัติ)
 
+### 4. อัปเดตบอทเป็นโค้ดล่าสุด
+```bash
+git pull                                  # ดึงโค้ดใหม่
+docker compose up -d --build              # Docker: สร้าง image ใหม่แล้วเริ่มใหม่
+# หรือแบบปกติ: หยุดบอท (Ctrl+C) แล้ว python bot.py อีกครั้ง
+```
+เช็กว่าได้โค้ดใหม่จากบรรทัดแรกๆ ของ log: `Code version xxxxxxxx` ต้องเปลี่ยนไปจากเดิม (ถ้าใช้ Docker แค่ `restart` ไม่พอ ต้อง `--build` เพราะโค้ดอยู่ใน image)
+
 ---
 
 <a id="config"></a>

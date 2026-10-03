@@ -189,6 +189,21 @@ def setup_log_file():
     log.info("Log file: %s", os.path.abspath(config.LOG_FILE))
 
 
+def code_version() -> str:
+    """Fingerprint of the bot's own code, so a log shows which version was running
+    (works without git, e.g. a copied folder or a Docker image)."""
+    import hashlib
+    here = os.path.dirname(os.path.abspath(__file__))
+    digest = hashlib.sha1()
+    for folder in (".", "core", "cogs"):
+        path = os.path.join(here, folder)
+        for name in sorted(os.listdir(path)):
+            if name.endswith(".py"):
+                with open(os.path.join(path, name), "rb") as fh:
+                    digest.update(fh.read())
+    return digest.hexdigest()[:8]
+
+
 def cpu_info() -> str:
     """Cores, and the CPU limit of the container if there is one (cgroup v2 or v1):
     a tight limit makes the music stutter while cards are drawn."""
@@ -219,6 +234,7 @@ def cpu_info() -> str:
 
 def main():
     setup_log_file()
+    log.info("Code version %s · Python %s", code_version(), sys.version.split()[0])
     log.info("CPU: %s", cpu_info())
     if not config.TOKEN:
         raise SystemExit("DISCORD_TOKEN missing. Copy .env.example to .env and fill it.")
