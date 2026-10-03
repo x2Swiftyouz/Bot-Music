@@ -101,9 +101,11 @@ def _only_tags(text: str) -> bool:
 
 
 # "(feat. X)", "[ft. X]", "(with X)" anywhere, or "ft. X" / "feat. X" at the end.
-_FEAT_BRACKET = re.compile(r"\s*[(\[]\s*(?:feat\.?|ft\.?|featuring|with)\s+([^()\[\]]+?)\s*[)\]]",
+# "ft." / "feat." may be glued to the name ("Ft.N/A"); without the dot a space must follow
+_FEAT_WORD = r"(?:(?:feat|ft)\.\s*|(?:feat|ft|featuring)\s+)"
+_FEAT_BRACKET = re.compile(r"\s*[(\[]\s*(?:" + _FEAT_WORD + r"|with\s+)([^()\[\]]+?)\s*[)\]]",
                            re.I)
-_FEAT_TAIL = re.compile(r"\s+(?:feat\.?|ft\.?|featuring)\s+((?:(?! - )[^()\[\]|])+?)\s*$", re.I)
+_FEAT_TAIL = re.compile(r"\s+" + _FEAT_WORD + r"((?:(?! - )[^()\[\]|])+?)\s*$", re.I)
 
 
 def split_feat(title: str) -> tuple[str, str]:
@@ -112,7 +114,8 @@ def split_feat(title: str) -> tuple[str, str]:
     if not m:
         return title, ""
     rest = (title[:m.start()] + title[m.end():]).strip()
-    return (rest or title), m.group(1).strip()
+    names = re.sub(r"\s*,\s*", ", ", m.group(1).strip())  # "N/A , HK" -> "N/A, HK"
+    return (rest or title), names
 
 
 def clean_title(title: str) -> str:
