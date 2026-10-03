@@ -16,7 +16,7 @@ from core.sources import (Track, fmt_time, parse_time, search_busy, search_choic
                           search_tracks)
 from core import clean, lyrics
 from core.ui import (LOOP_ICON, LyricsView, QueueView, SearchView, build_added_embed,
-                     build_now_playing, who_label)
+                     build_now_playing, wait_text, who_label)
 
 log = logging.getLogger("musicbot.music")
 
@@ -99,7 +99,7 @@ class Music(commands.Cog):
         if player.fair_queue and not front:  # taking turns may place it earlier
             index = max(player.position_of(tracks[0]), 0)
         what = tracks[0].name[:40] if added == 1 else f"{added} เพลง"
-        player.note(f"➕ {who_label(member)} เพิ่ม {what}")
+        player.note(f"➕ {who_label(member)} เพิ่ม {what}{wait_text(player, index)}")
         return build_added_embed(player, tracks[:added], index, label)
 
     # ----------------------------------------------------------- commands
@@ -365,6 +365,8 @@ class Music(commands.Cog):
         vc = guild.voice_client
         if not p or not vc or not vc.channel or member.bot:
             return
+        if (before.channel == vc.channel) != (after.channel == vc.channel):
+            p.panel_soon()  # the listener faces on the card
         if after.channel == vc.channel and before.channel != vc.channel:
             await p.someone_back(member)  # resume a song paused while nobody was here
             return

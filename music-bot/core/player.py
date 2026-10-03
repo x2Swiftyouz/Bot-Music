@@ -1172,7 +1172,8 @@ class GuildPlayer:
             theme=self.card_theme, layout="mini" if self.compact else self.card_layout,
             mode=mode, reason=reason, avatar=self.avatar_url(t),
             animate=self._animate(mode), views=t._views if t else 0, year=t._year if t else "",
-            night=is_night(), server_icon=self.server_icon_url())
+            night=is_night(), server_icon=self.server_icon_url(),
+            listeners=self.listener_avatars(), listener_count=len(self.humans_in_channel()))
 
     def in_ending(self) -> bool:
         """Last ENDING_SECONDS of a song with another one queued: the card shows it."""
@@ -1207,6 +1208,18 @@ class GuildPlayer:
         if config.CARD_ANIMATION == "always":
             return True
         return self.position < config.CARD_ANIMATION_SECONDS
+
+    LISTENER_FACES = 5
+
+    def listener_avatars(self) -> tuple:
+        """Avatar URLs of the first few people in the voice channel (for the card)."""
+        out = []
+        for m in self.humans_in_channel()[:self.LISTENER_FACES]:
+            try:
+                out.append(str(m.display_avatar.with_size(64).url))
+            except Exception:
+                pass
+        return tuple(out)
 
     def avatar_url(self, track: Optional[Track]) -> str:
         """Small avatar of whoever requested the track ("" when unknown)."""

@@ -335,6 +335,8 @@ class CardState:
     server_icon: str = ""       # the server's icon URL, shown small in the top-right corner
     views: int = 0              # view count chip (0 = none)
     year: str = ""              # release year chip
+    listeners: tuple = ()       # avatar URLs of people in the voice channel (a few)
+    listener_count: int = 0     # everyone in the voice channel ("+N" for the rest)
 
 
 # -------------------------------------------------------------------- text
@@ -1513,9 +1515,47 @@ def _server_icon(canvas: Image.Image, g: Geo, icon: Optional[bytes]):
     canvas.alpha_composite(img, (x, y))
 
 
+LISTENER = 40         # px (the server icon's size): listener avatars in the card's top row
+LISTENER_STEP = 28    # they overlap
+LISTENERS_SHOWN = 5
+LISTENERS_MIN = 2     # one listener is the requester, already shown next to "ขอโดย"
+
+
+def _draw_listeners(canvas: Image.Image, g: Geo, avatars, total: int, has_icon: bool):
+    """Who is listening: overlapping round avatars, then "+N". Wide: top right, left of the
+    server icon. Square: top left (the server icon has the right)."""
+    faces = [a for a in (_avatar(b, LISTENER) for b in avatars or ()) if a is not None]
+    faces = faces[:LISTENERS_SHOWN]
+    rest = total - len(faces)
+    fnt = font("Medium", 25)
+    d = _Draw(canvas)
+    more = f"+{rest}" if rest > 0 else ""
+    more_w = d.textlength(more, font=fnt) + 10 if more else 0
+    width = (len(faces) - 1) * LISTENER_STEP + LISTENER + more_w if faces else more_w
+    if not width:
+        return
+    y = 18
+    if g.center:
+        x = 22
+    else:
+        right = g.w - 22 - (SERVER_ICON + 14 if has_icon else 0)
+        x = right - width
+    ring = (*_mix((20, 20, 28), (0, 0, 0), 0.2), 255)
+    for i, face in enumerate(faces):
+        fx = int(x + i * LISTENER_STEP)
+        edge = Image.new("RGBA", canvas.size, (0, 0, 0, 0))
+        _Draw(edge).ellipse((fx - 2, y - 2, fx + LISTENER + 2, y + LISTENER + 2), fill=ring)
+        canvas.alpha_composite(edge)
+        canvas.alpha_composite(face, (fx, y))
+    if more:
+        d = _Draw(canvas)
+        d.text((x + width - more_w + 8, y + LISTENER / 2), more, font=fnt,
+               fill=(225, 225, 235), anchor="lm")
+
+
 def render(track: Track, art_bytes: Optional[bytes], st: CardState = CardState(),
            next_art: Optional[bytes] = None, avatar: Optional[bytes] = None,
-           icon: Optional[bytes] = None) -> bytes:
+           icon: Optional[bytes] = None, listeners: tuple = ()) -> bytes:
     g = GEOS.get(st.layout, WIDE)
     theme = st.theme if st.theme in THEMES else "blur"
     base = _render_base(track, art_bytes, g, theme, None if g is MINI else avatar, st.night)
@@ -1527,6 +1567,8 @@ def render(track: Track, art_bytes: Optional[bytes], st: CardState = CardState()
     bg = base.bg
     if icon and st.mode in ("play", "loading", "share"):
         _server_icon(canvas, g, icon)
+    if st.mode == "play" and st.listener_count >= LISTENERS_MIN:
+        _draw_listeners(canvas, g, listeners, st.listener_count, bool(icon))
     glow = theme == "neon"
     if st.mode == "error":
         canvas.alpha_composite(Image.new("RGBA", canvas.size, (120, 0, 0, 70)))
@@ -1913,10 +1955,10 @@ async def _run(func, *args):
         loop.run_in_executor(None, functools.partial(func, *args)), timeout=8)
 
 
-def _job_render(track, art, state, next_art, avatar, icon=None):
+def _job_render(track, art, state, next_art, avatar, icon=None, listeners=()):
     """In the card process: the card, plus the cover colour the bot uses for the panel."""
     started = time.perf_counter()
-    data = render(track, art, state, next_art, avatar, icon)
+    data = render(track, art, state, next_art, avatar, icon, listeners)
     return data, _accents.get(track.url), time.perf_counter() - started
 
 
@@ -1943,7 +1985,11 @@ async def make_card(track: Track, state: CardState = CardState()) -> Optional[by
             *(fetch_art(u or None) for u in state.more_thumbs))
         if more:
             next_art = [next_art, *more]
-        data, accent, took = await _run(_job_render, track, art, state, next_art, avatar, icon)
+        faces = ()
+        if state.listener_count >= LISTENERS_MIN and state.mode == "play":
+            faces = tuple(await asyncio.gather(*(fetch_art(u or None) for u in state.listeners)))
+        data, accent, took = await _run(_job_render, track, art, state, next_art, avatar, icon,
+                                        faces)
         _remember_accent(track, accent)
         if took > SLOW_RENDER:
             log.info("card took %.2fs to draw (%s%s)", took, state.layout,

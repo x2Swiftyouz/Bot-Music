@@ -1325,6 +1325,17 @@ class CompactPanelView(discord.ui.View):
         await act_queue(inter)
 
 
+def wait_text(p: "GuildPlayer", index: int) -> str:
+    """For the panel's "➕ added" note: when queue[index] (just added) will play.
+    ' · ถัดไป <t:…:R>' counts down by itself on every screen."""
+    if not p.current:
+        return ""  # nothing playing: it starts now
+    eta = p.eta(index)
+    if eta is None:
+        return ""
+    return f" · {'ถัดไป' if index == 0 else 'ถึงคิว'} {relative_ts(eta)}"
+
+
 def relative_ts(seconds_from_now: Optional[int]) -> str:
     if seconds_from_now is None:
         return "ไม่ทราบ"
