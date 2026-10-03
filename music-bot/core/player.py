@@ -138,7 +138,9 @@ NO_PINGS = discord.AllowedMentions.none()
 EDIT_GAP_START = 5.0   # seconds between timer edits after the first 429
 EDIT_GAP_MAX = 20.0
 EDIT_GAP_DECAY = 120   # seconds without a 429 before edits speed up by 1 s
-STICKY_MIN_GAP = 20  # seconds: a busy chat must not make the panel jump down constantly  # the panel names people (status line), never pings
+STICKY_MIN_GAP = 20
+ENDING_SECONDS = 10  # the card shows the next song this long before the end
+HOT_PART = 0.85  # heatmap level (of the peak) that counts as the hit part  # seconds: a busy chat must not make the panel jump down constantly  # the panel names people (status line), never pings
 
 
 def _media_urls(components) -> list[str]:
@@ -1111,6 +1113,7 @@ class GuildPlayer:
     def card_state(self, mode: str = "play", reason: str = ""):
         from core.card import CardState
         t = self.current
+        lyric_now, lyric_next = self.card_lyrics()
         end_clock = ""
         if self.time_format == 2 and t and t.duration:
             end_clock = clock_after(t.duration - self.position)
@@ -1120,11 +1123,45 @@ class GuildPlayer:
             queue_len=len(self.queue), paused=self.is_paused,
             time_mode=TIME_MODES[self.time_format], end_clock=end_clock,
             next_title=nxt.name if nxt else "", next_thumb=(nxt.thumbnail or "") if nxt else "",
+            more_thumbs=tuple(q.thumbnail or "" for q in list(self.queue)[1:3]),
+            hot_part=self.in_hot_part(), ending=self.in_ending(),
+            lyric_now=lyric_now, lyric_next=lyric_next,
             hot=self.track_plays, birthday=self.requester_birthday, blink=self._blink,
             theme=self.card_theme, layout="mini" if self.compact else self.card_layout,
             mode=mode, reason=reason, avatar=self.avatar_url(t),
             animate=self._animate(mode), views=t._views if t else 0, year=t._year if t else "",
             night=is_night(), server_icon=self.server_icon_url())
+
+    def in_ending(self) -> bool:
+        """Last ENDING_SECONDS of a song with another one queued: the card shows it."""
+        t = self.current
+        return bool(t and t.duration and self.queue and self.loop_mode != "track"
+                    and t.duration - self.position <= ENDING_SECONDS)
+
+    def lyrics_on_card(self) -> bool:
+        """Live lyrics go on the card (big panel with a card), not in the text."""
+        return bool(config.LYRICS_ON_CARD and self.live_lyrics and self.has_card
+                    and not self.compact and self.lyrics and self.lyrics.synced
+                    and self.current and self.lyrics_url == self.current.url)
+
+    def card_lyrics(self) -> tuple[str, str]:
+        if not self.lyrics_on_card():
+            return "", ""
+        from core.ui import LYRICS_LEAD
+        lines = self.lyrics.synced
+        i = self.lyrics.line_at(self.position + LYRICS_LEAD)
+        now = (lines[i][1] or "♪") if i >= 0 else "♪"
+        nxt = (lines[i + 1][1] or "♪") if i + 1 < len(lines) else ""
+        return now, nxt
+
+    def in_hot_part(self) -> bool:
+        """Is the song at its most replayed part (YouTube heatmap, top 15%)?"""
+        t = self.current
+        heat = tuple(t._heatmap or ()) if t else ()
+        if not heat or not t.duration or max(heat) <= 0:
+            return False
+        i = min(int(self.position / t.duration * len(heat)), len(heat) - 1)
+        return heat[i] >= HOT_PART * max(heat)
 
     def server_icon_url(self) -> str:
         """Small server icon for the card corner ("" = none or CARD_SERVER_ICON off)."""
@@ -1140,6 +1177,8 @@ class GuildPlayer:
         """Moving equalizer: always, never, or (default) only on a song's first card, so
         Discord's "GIF" label does not stay on the panel."""
         if mode != "play" or self.is_paused or config.CARD_ANIMATION == "off":
+            return False
+        if self.lyrics_on_card():  # a new card for every line: still images are enough
             return False
         if config.CARD_ANIMATION == "always":
             return True
@@ -1488,7 +1527,13 @@ class GuildPlayer:
         while not self.destroyed:
             karaoke = (self.live_lyrics and self.lyrics and self.lyrics.synced
                        and self.current and self.lyrics_url == self.current.url)
-            await asyncio.sleep(config.LYRICS_REFRESH if karaoke else config.PANEL_REFRESH)
+            wait = config.LYRICS_REFRESH if karaoke else config.PANEL_REFRESH
+            t = self.current
+            if t and t.duration and self.queue and not self.is_paused:
+                until_end = t.duration - self.position - ENDING_SECONDS
+                if 0 < until_end < wait:  # wake up right when the "up next" card is due
+                    wait = until_end + 0.3
+            await asyncio.sleep(wait)
             if self.current and self.panel_message and (not self.is_paused
                                                          or self._note_expired()):
                 await self.update_panel(tick=True)

@@ -67,6 +67,7 @@ LOG_MAX_MB = max(_int("LOG_MAX_MB", 5), 1)       # per file; LOG_BACKUPS older f
 LOG_BACKUPS = max(_int("LOG_BACKUPS", 3), 0)
 LOG_FRESH = _bool("LOG_FRESH", True)              # start a new log file on every start
 CARD_SERVER_ICON = _bool("CARD_SERVER_ICON", True)  # server icon in the card's corner
+CARD_MARQUEE = _bool("CARD_MARQUEE", not LOW_CPU)  # long titles scroll on moving cards
 CARD_PROCESS = _bool("CARD_PROCESS", True)     # draw cards in a worker process (no stutter)
 YTDL_PROCESSES = _int("YTDL_PROCESSES", 2)    # yt-dlp worker processes (0 = threads, old way)
 YTDL_DEBUG = _bool("YTDL_DEBUG", False)         # verbose yt-dlp log
@@ -110,6 +111,7 @@ NIGHT_MODE = _bool("NIGHT_MODE", True)            # darker card late at night (T
 NIGHT_HOURS = os.getenv("NIGHT_HOURS", "22-6")     # start-end hour, wraps past midnight
 STICKY_PANEL = _int("STICKY_PANEL", 10)           # re-post the panel below after N chat messages (0 = off)
 REQUEST_DELETE_DELAY = max(_int("REQUEST_DELETE_DELAY", 2), 1)  # request channel: seconds
+LYRICS_ON_CARD = _bool("LYRICS_ON_CARD", True)   # live lyrics drawn on the card, not as text
 LYRICS_PREFETCH = _bool("LYRICS_PREFETCH", True)  # look lyrics up when a song starts (🎤 state)
 SESSION_SUMMARY = _bool("SESSION_SUMMARY", True)  # recap card when the session ends
 HOT_THRESHOLD = _int("HOT_THRESHOLD", 5)         # plays in a server for the "hit" badge
