@@ -18,7 +18,7 @@ import discord
 
 import config
 from core import clock, ratelimit
-from core.sources import Track, explain_error, fmt_time, resolve_stream
+from core.sources import Track, clean_artist, explain_error, fmt_time, resolve_stream
 from core.audio import CountingSource, Prebuffer, Silence, SmoothVolume
 from core.stream import HTTPStreamReader
 
@@ -154,6 +154,8 @@ EFFECTS = {
     "8d": ("8D", "🎧", "apulsator=hz=0.09", 1.0),
 }
 
+BITRATE_MIN, BITRATE_MAX = 64, 384  # kbps, sent to Discord
+
 ENDING_SECONDS = 10  # the card shows the next song this long before the end
 QUEUE_LOW_SECONDS = 60  # nothing queued, no autoplay: the card warns this long before the end
 HOT_PART = 0.85  # heatmap level (of the peak) that counts as the hit part (= card.HOT_LEVEL)
@@ -183,6 +185,49 @@ LOUDNESS_EXP = 1.66
 def loudness_gain(volume: float) -> float:
     """Volume as people hear it (1.0 = full) -> audio gain."""
     return max(volume, 0.0) ** LOUDNESS_EXP
+
+SHUFFLE_LOOKAHEAD = 8  # how far ahead smart shuffle looks for a song that does not clash
+
+
+def _artist_key(t: Track) -> str:
+    return clean_artist(t.artist or "").casefold().removesuffix(" - topic").strip()
+
+
+def smart_shuffle(items: list, after: Optional[Track] = None) -> list:
+    """Shuffle so one artist's songs spread out evenly (each artist's songs get evenly
+    spaced slots with a random offset, Spotify-style), then walk the result and swap in a
+    song from a little further on when the next one would follow the same artist or the
+    same requester. Songs without an artist never clash on artist."""
+    if len(items) < 2:
+        return list(items)
+    groups: dict = {}
+    for t in items:
+        key = _artist_key(t) or f"#{id(t)}"
+        groups.setdefault(key, []).append(t)
+    slots = []
+    for songs in groups.values():
+        random.shuffle(songs)
+        n, start = len(songs), random.random()
+        for i, t in enumerate(songs):
+            jitter = random.uniform(-0.15, 0.15) if n > 1 else 0.0
+            slots.append(((i + start + jitter) / n, random.random(), t))
+    rest = [t for *_, t in sorted(slots, key=lambda x: x[:2])]
+
+    def clash(a, b) -> int:
+        if a is None:
+            return 0
+        same_artist = bool(_artist_key(a)) and _artist_key(a) == _artist_key(b)
+        same_person = bool(a.requester_id) and a.requester_id == b.requester_id
+        return 2 * same_artist + same_person
+
+    out, prev = [], after
+    while rest:
+        window = rest[:SHUFFLE_LOOKAHEAD]
+        best = min(range(len(window)), key=lambda i: (clash(prev, window[i]), i))
+        prev = rest.pop(best)
+        out.append(prev)
+    return out
+
 
 class GuildPlayer:
     def __init__(self, bot: "MusicBot", guild: discord.Guild, settings: dict):
@@ -626,10 +671,11 @@ class GuildPlayer:
         return removed
 
     def shuffle(self):
+        """🔀 Smart shuffle: random, but songs by the same artist are spread through the
+        queue, and neither the same artist nor the same requester's songs sit side by side
+        (nor right after the song playing now) when the queue allows it."""
         self.push_undo("shuffle")
-        items = list(self.queue)
-        random.shuffle(items)
-        self.queue = deque(items)
+        self.queue = deque(smart_shuffle(list(self.queue), self.current))
 
     def cycle_loop(self) -> str:
         self.loop_mode = LOOP_MODES[(LOOP_MODES.index(self.loop_mode) + 1) % 3]
@@ -779,7 +825,7 @@ class GuildPlayer:
                     src.fade_to(self.gain, max(config.FADE_MS, 200))
             else:
                 src = CountingSource(_OpusAudio(
-                    src_arg, executable=exe, pipe=pipe, bitrate=128,
+                    src_arg, executable=exe, pipe=pipe, bitrate=self.voice_bitrate(),
                     before_options=before or None, options=opts))
         except Exception:
             if reader:
@@ -799,6 +845,16 @@ class GuildPlayer:
         self._drop_preload()
         if self.current and self.current.duration:
             self.restart_at(self.position)
+
+    def voice_bitrate(self) -> int:
+        """Opus bitrate (kbps) to send at: the voice channel's own setting, which a
+        server's boost level allows up to 384. More than the channel takes is wasted,
+        less throws away quality the listeners could have. VOICE_BITRATE pins it."""
+        if config.VOICE_BITRATE:
+            return max(16, min(config.VOICE_BITRATE, 512))
+        channel = self.vc.channel if self.vc else None
+        kbps = (getattr(channel, "bitrate", 0) or 0) // 1000
+        return max(BITRATE_MIN, min(kbps or 128, BITRATE_MAX))
 
     def set_effect(self, key: str) -> bool:
         """🎛️ Switch the sound effect. Filters are baked into FFmpeg, so the song restarts
@@ -926,7 +982,8 @@ class GuildPlayer:
             self.bot.loop.call_soon_threadsafe(self._next.set)
 
         try:
-            vc.play(source, after=after)
+            # music, at the voice channel's own quality (boosted servers go up to 384 kbps)
+            vc.play(source, after=after, bitrate=self.voice_bitrate(), signal_type="music")
             source._mb_player = getattr(vc, "_player", None)  # see audio.keep_pace
         except Exception as exc:
             self.close_source(source)
@@ -939,7 +996,8 @@ class GuildPlayer:
         self._fail_streak = 0
 
         self._source = source
-        log.info("[%s] Playing %s (start %.0fs)", self.guild.id, track.title, start)
+        log.info("[%s] Playing %s (start %.0fs, %d kbps)", self.guild.id, track.title, start,
+                 self.voice_bitrate())
         self._start_at = start
         self._started = time.monotonic()
         self._paused_at = None
@@ -1249,7 +1307,8 @@ class GuildPlayer:
             night=is_night(), server_icon=self.server_icon_url(),
             listeners=self.listener_avatars(), listener_count=len(self.humans_in_channel()),
             queue_low=self.queue_low(),
-            effect=EFFECTS[self.effect][0] if self.effect != "off" else "")
+            effect=EFFECTS[self.effect][0] if self.effect != "off" else "",
+            fx=self.effect if self.effect != "off" else "")
 
     def queue_low(self) -> bool:
         """The music is about to stop: under a minute left, nothing queued, nothing to

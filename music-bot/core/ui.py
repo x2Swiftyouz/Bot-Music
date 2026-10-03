@@ -1187,6 +1187,8 @@ async def _apply_quick(inter, p: "GuildPlayer", key: str) -> tuple[str, bool]:
     return text, repost
 
 
+SHUFFLED = "🔀 สลับคิวแล้ว · เพลงศิลปินเดียวกันจะไม่อยู่ติดกัน (/undo เพื่อย้อน)"
+
 SETTINGS_TEXT = ("### ⚙️ ตั้งค่า\n📻 **Autoplay** ทุกคนกดได้: คิวหมดแล้วเล่นเพลงคล้ายกันต่อเอง\n"
                  "🎛️ **เอฟเฟกต์เสียง** ทุกคนเลือกได้ ใช้กับทุกเพลงจนกว่าจะเปลี่ยนหรือบอทออกจากห้อง\n"
                  "-# ตั้งค่าเซิร์ฟเวอร์ในเมนูด้านล่างใช้ได้เฉพาะแอดมิน")
@@ -1207,13 +1209,9 @@ EFFECT_INFO = {"off": "เสียงเดิมของเพลง", "bass"
 
 def apply_effect(p: "GuildPlayer", key: str) -> str:
     """Switch the effect; returns what the status line and reply say ({who} = presser)."""
-    from core.player import EFFECTS
     if not p.set_effect(key):
         raise UserError("ไม่รู้จักเอฟเฟกต์นี้")
-    name, emoji, *_ = EFFECTS[key]
-    if key == "off":
-        return "🎵 {who} ปิดเอฟเฟกต์เสียง"
-    return f"{emoji} {{who}} เปิดเอฟเฟกต์ {name}"
+    return _effect_note(p)
 
 
 class SettingsView(discord.ui.View):
@@ -1272,6 +1270,26 @@ class SettingsView(discord.ui.View):
         text, repost = await _apply_quick(inter, p, select.values[0])
         await self._refresh(inter, text)
         await _after_quick(p, repost)
+
+
+async def act_effect(inter, key: str):
+    """🎛️ menu on the mobile panel: switch the sound effect for everyone."""
+    def run(p: "GuildPlayer") -> Optional[str]:
+        try:
+            apply_effect(p, key)
+        except UserError as exc:
+            return str(exc)
+        return None
+    await _act(inter, run, f"effect {key}", note=lambda p, msg: None if msg else _effect_note(p))
+
+
+def _effect_note(p: "GuildPlayer") -> str:
+    """Status line text for the effect now on ({who} = the person who picked it)."""
+    from core.player import EFFECTS
+    if p.effect == "off":
+        return "🎵 {who} ปิดเอฟเฟกต์เสียง"
+    name, emoji, *_ = EFFECTS[p.effect]
+    return f"{emoji} {{who}} เปิดเอฟเฟกต์ {name}"
 
 
 async def act_settings(inter):
@@ -1471,8 +1489,8 @@ class PanelView(discord.ui.View):
 
     @discord.ui.button(emoji="🔀", style=discord.ButtonStyle.secondary, custom_id="mb:shuffle", row=1)
     async def shuffle(self, inter, _):
-        await _act(inter, lambda p: (p.shuffle(), "🔀 สลับคิวแล้ว (ใช้ /undo เพื่อย้อน)")[1],
-                   "shuffle", note="🔀 {who} สลับคิว")
+        await _act(inter, lambda p: (p.shuffle(), SHUFFLED)[1], "shuffle",
+                   note="🔀 {who} สลับคิว")
 
     @discord.ui.button(emoji="📜", style=discord.ButtonStyle.secondary, custom_id="mb:queue", row=1)
     async def queue_btn(self, inter, _):
@@ -1559,6 +1577,11 @@ class CompactPanelView(discord.ui.View):
         _counts(self, p)
         if p.queue:  # one row and a slim card without the queue chip: keep the number here
             self.queue_btn.label = f"{len(p.queue)}" if len(p.queue) < 1000 else "999+"
+        self.effect.options = _effect_options(p)
+        if getattr(p, "effect", "off") != "off":  # the menu says what is on, at a glance
+            from core.player import EFFECTS
+            name, emoji, *_ = EFFECTS[p.effect]
+            self.effect.placeholder = f"🎛️ เอฟเฟกต์: {name}"
 
     @discord.ui.button(emoji="⏮", style=discord.ButtonStyle.secondary, custom_id="mbc:prev")
     async def prev(self, inter, _):
@@ -1580,6 +1603,14 @@ class CompactPanelView(discord.ui.View):
     @discord.ui.button(emoji="📜", style=discord.ButtonStyle.secondary, custom_id="mbc:queue")
     async def queue_btn(self, inter, _):
         await act_queue(inter)
+
+    @discord.ui.select(placeholder="🎛️ เอฟเฟกต์เสียง", custom_id="mbc:effect", row=1,
+                       options=[discord.SelectOption(label=v, value=k)
+                                for k, v in (("off", "ปกติ"), ("bass", "Bass boost"),
+                                             ("nightcore", "Nightcore"),
+                                             ("slowed", "Slowed + Reverb"), ("8d", "8D"))])
+    async def effect(self, inter, select: discord.ui.Select):
+        await act_effect(inter, select.values[0])
 
 
 def wait_text(p: "GuildPlayer", index: int) -> str:

@@ -292,7 +292,7 @@ class Music(commands.Cog):
         if len(p.queue) < 2:
             raise UserError("เพลงในคิวน้อยเกินไป")
         p.shuffle()
-        await inter.response.send_message("🔀 สลับคิวแล้ว")
+        await inter.response.send_message("🔀 สลับคิวแล้ว · เพลงศิลปินเดียวกันจะไม่อยู่ติดกัน")
 
     @app_commands.command(description="ลบเพลงจากคิว")
     @app_commands.guild_only()

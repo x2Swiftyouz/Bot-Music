@@ -383,6 +383,7 @@ class CardState:
     listeners: tuple = ()       # avatar URLs of people in the voice channel (a few)
     listener_count: int = 0     # everyone in the voice channel ("+N" for the rest)
     effect: str = ""            # 🎛️ sound effect name ("Nightcore"), "" = none
+    fx: str = ""                # its key (bass | nightcore | slowed | 8d): the card's look
     queue_low: bool = False     # last minute, nothing queued, no autoplay: ask for a song
 
 
@@ -1497,19 +1498,27 @@ def _eq(canvas: Image.Image, spot, heights):
 
 
 def _encode_eq(canvas: Image.Image, spot, vinyl: Optional["Vinyl"] = None,
-               tint=None) -> bytes:
+               tint=None, pulse=None) -> bytes:
     """Animated WebP: only the equalizer (and the record's sheen) change between frames,
-    so it stays small. tint: a colour wash over the card (the hit part) to repeat on the
-    record strip."""
+    so it stays small. tint: colour washes over the card (the hit part, an effect) to
+    repeat on the record strip. pulse: (layers, x, y), cover overlays from quiet to loud,
+    one picked per frame by how high the bars are (Bass boost thumps)."""
     frames = []
     strips = vinyl.strips if vinyl else []
-    if tint and strips:
-        strips = [_tint_strip(st, tint) for st in strips]
+    tints = [t for t in (tint if isinstance(tint, list) else [tint]) if t]
+    for wash in tints:
+        strips = [_tint_strip(st, wash) for st in strips]
     for i in range(EQ_FRAMES):
         frame = canvas.copy()
-        _eq(frame, spot, _eq_frame(i))
+        heights = _eq_frame(i)
+        _eq(frame, spot, heights)
         if strips:
             frame.alpha_composite(strips[i % len(strips)], (vinyl.x, vinyl.y))
+        if pulse:
+            layers, px, py = pulse
+            level = heights[0]  # the first (bass) bar, 0.05 .. 0.95
+            frame.alpha_composite(layers[min(int(level * len(layers)), len(layers) - 1)],
+                                  (px, py))
         frames.append(frame.convert("RGB"))
     out = io.BytesIO()
     # One full picture, then only what changed: without kmin/kmax libwebp stores several
@@ -1518,6 +1527,100 @@ def _encode_eq(canvas: Image.Image, spot, vinyl: Optional["Vinyl"] = None,
                    loop=0, quality=WEBP_QUALITY, method=2, minimize_size=False,
                    kmin=EQ_FRAMES, kmax=EQ_FRAMES + 1)
     return out.getvalue()
+
+
+# 🎛️ effect looks: a colour wash over the card, and a pattern on the cover
+FX_TINTS = {"nightcore": (255, 70, 170, 28), "slowed": (40, 80, 150, 62),
+            "bass": (210, 30, 70, 24), "8d": (40, 200, 220, 20)}
+COVER_RADIUS = 24
+BASS_LEVELS = 3
+
+
+def _cover_mask(size: int) -> Image.Image:
+    mask = Image.new("L", (size, size), 0)
+    _Draw(mask).rounded_rectangle((0, 0, size, size), COVER_RADIUS, fill=255)
+    return mask
+
+
+def _clip_to_cover(layer: Image.Image) -> Image.Image:
+    """Keep the pattern on the cover, and off the source badge in its bottom-left corner."""
+    mask = _cover_mask(layer.width)
+    _Draw(mask).rectangle((0, layer.height - 46, 160, layer.height), fill=0)
+    layer.putalpha(ImageChops.multiply(layer.getchannel("A"), mask))
+    return layer
+
+
+def _sparkle(d, cx, cy, r, alpha):
+    """A four-pointed star."""
+    w = r * 0.22
+    d.polygon([(cx, cy - r), (cx + w, cy - w), (cx + r, cy), (cx + w, cy + w), (cx, cy + r),
+               (cx - w, cy + w), (cx - r, cy), (cx - w, cy - w)], fill=(255, 255, 255, alpha))
+
+
+def _fx_cover(fx: str, size: int, seed: str, level: float = 0.5) -> Optional[Image.Image]:
+    """The effect's pattern over the cover (size x size, clipped to its rounded corners):
+    Nightcore sparkles, Slowed rain on glass, 8D sound rings from the middle,
+    Bass boost speaker rings (level: how hard it thumps, for the animation)."""
+    rnd = random.Random(f"{seed}|{fx}")
+    layer = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+    d = _Draw(layer)
+    c = size / 2
+    if fx == "nightcore":
+        for _ in range(9):
+            x, y = rnd.uniform(0.08, 0.92) * size, rnd.uniform(0.08, 0.92) * size
+            _sparkle(d, x, y, rnd.uniform(0.025, 0.06) * size, rnd.randint(150, 230))
+        for _ in range(14):  # tiny dots between the stars
+            x, y, r = rnd.uniform(0, size), rnd.uniform(0, size), size * 0.006
+            d.ellipse((x - r, y - r, x + r, y + r), fill=(255, 230, 250, 200))
+        glow = layer.filter(ImageFilter.GaussianBlur(size * 0.012))
+        layer = Image.alpha_composite(glow, layer)
+    elif fx == "slowed":
+        w = max(round(size * 0.004), 1)
+        for _ in range(46):  # streaks running down the glass
+            x, y = rnd.uniform(0, size), rnd.uniform(-0.1, 1.0) * size
+            n = rnd.uniform(0.04, 0.12) * size
+            d.line((x, y, x - n * 0.18, y + n), fill=(225, 235, 255, rnd.randint(60, 120)),
+                   width=w)
+        for _ in range(16):  # drops
+            x, y, r = rnd.uniform(0, size), rnd.uniform(0, size), rnd.uniform(0.006, 0.014) * size
+            d.ellipse((x - r, y - r * 1.2, x + r, y + r * 1.2), fill=(235, 242, 255, 150))
+    elif fx == "8d":
+        w = max(round(size * 0.006), 1)
+        for i in range(1, 6):
+            r = c * i / 5.2
+            d.ellipse((c - r, c - r, c + r, c + r), outline=(220, 255, 255, 120 - i * 16),
+                      width=w)
+        for ang in (-0.6, 2.5):  # two sounds orbiting
+            x, y, r = c + c * 0.62 * math.cos(ang), c + c * 0.62 * math.sin(ang), size * 0.03
+            d.ellipse((x - r, y - r, x + r, y + r), fill=(235, 255, 255, 210))
+        layer = Image.alpha_composite(layer.filter(ImageFilter.GaussianBlur(size * 0.006)),
+                                      layer)
+    elif fx == "bass":
+        w = max(round(size * (0.008 + 0.01 * level)), 1)
+        for i in range(1, 4):
+            r = c * (0.25 + i * 0.22) * (0.94 + 0.1 * level)
+            d.ellipse((c - r, c - r, c + r, c + r),
+                      outline=(255, 120, 150, int((70 + 120 * level) * (1.1 - i * 0.25))),
+                      width=w)
+        layer = Image.alpha_composite(layer.filter(ImageFilter.GaussianBlur(size * 0.012)),
+                                      layer)
+    else:
+        return None
+    return _clip_to_cover(layer)
+
+
+def _draw_fx(canvas: Image.Image, g: Geo, fx: str, seed: str, animated: bool):
+    """The effect's look on a playing card. Returns the Bass boost pulse for the animation
+    (or None): the still card gets a medium thump instead."""
+    tint = FX_TINTS.get(fx)
+    if not tint:
+        return None
+    canvas.alpha_composite(Image.new("RGBA", canvas.size, tint))
+    if fx == "bass" and animated:
+        layers = [_fx_cover(fx, g.art, seed, (i + 0.5) / BASS_LEVELS) for i in range(BASS_LEVELS)]
+        return layers, g.art_x, g.art_y
+    canvas.alpha_composite(_fx_cover(fx, g.art, seed), (g.art_x, g.art_y))
+    return None
 
 
 def _can_animate() -> bool:
@@ -1799,6 +1902,9 @@ def render(track: Track, art_bytes: Optional[bytes], st: CardState = CardState()
     g = _flow(g, base.text_bottom)
     canvas = base.canvas.crop((0, 0, g.w, g.h)) if g.h != base.canvas.height else base.canvas.copy()
     accent, accent2 = _mood(canvas, st, base.accent, base.accent2)
+    pulse = None
+    if st.mode == "play" and st.fx:
+        pulse = _draw_fx(canvas, g, st.fx, track.url, st.animate and ANIMATED)
     if st.paused and st.mode == "play":
         _pause_mark(canvas, g.art_x + g.art / 2, g.art_y + g.art / 2, g.art * 0.17)
     bg = base.bg
@@ -1887,8 +1993,11 @@ def render(track: Track, art_bytes: Optional[bytes], st: CardState = CardState()
         _draw_times(canvas, g, fmt_time(st.position), _right_time(track, st),
                     middle="" if st.mode == "play" else chapter)
     if eq_spot and st.animate and ANIMATED:
-        tint = HOT_TINT if st.mode == "play" and st.hot_part else None
-        return _encode_eq(canvas, eq_spot, base.vinyl, tint)
+        tints = [HOT_TINT if st.mode == "play" and st.hot_part else None,
+                 FX_TINTS.get(st.fx) if st.mode == "play" else None]
+        return _encode_eq(canvas, eq_spot, base.vinyl, tints, pulse)
+    if pulse:  # animated look asked for, but the card ends up still
+        canvas.alpha_composite(pulse[0][1], (pulse[1], pulse[2]))
     if eq_spot and st.animate:  # no animation support: still bars
         _eq(canvas, eq_spot, EQ_STILL)
     return _encode(canvas)

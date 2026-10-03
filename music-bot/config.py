@@ -75,6 +75,8 @@ CARD_PROCESS = _bool("CARD_PROCESS", True)     # draw cards in a worker process 
 YTDL_PROCESSES = _int("YTDL_PROCESSES", 2)    # yt-dlp worker processes (0 = threads, old way)
 YTDL_DEBUG = _bool("YTDL_DEBUG", False)         # verbose yt-dlp log
 YTDLP_COOKIES = os.getenv("YTDLP_COOKIES") or None
+# Opus bitrate in kbps sent to Discord. 0 = follow the voice channel (64-384)
+VOICE_BITRATE = int(os.getenv("VOICE_BITRATE", "0") or 0)
 
 # Privileged intent, needed for prefix commands (!p, !s ...).
 # Enable "Message Content Intent" in the Developer Portal when this is true.
