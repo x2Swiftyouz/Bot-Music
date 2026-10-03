@@ -239,6 +239,10 @@ def main():
     from core.player import OPUS_LOADED
     log.info("FFmpeg: %s (stream mode: %s)", config.FFMPEG, config.STREAM_MODE)
     log.info("Opus: %s", "libopus loaded" if OPUS_LOADED else "not found, FFmpeg encodes Opus")
+    from core.card import LAYOUT
+    from PIL import ImageFont
+    log.info("Card text layout: %s", "raqm (full)" if LAYOUT == ImageFont.Layout.RAQM
+             else "basic (no libraqm: Lao / Khmer / Myanmar marks are placed by the bot)")
     if config.DENO:
         log.info("Deno: %s", config.DENO)
     else:

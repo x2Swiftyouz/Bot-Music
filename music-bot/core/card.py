@@ -168,9 +168,13 @@ def _runs(text: str, fnt) -> Optional[list[tuple[str, ImageFont.FreeTypeFont]]]:
         return None
     chain = [path] + _chain(name[6:-4], text)
     runs: list[list] = []
+    dropped = False
     for ch in text:
         cat = unicodedata.category(ch)
         cur = runs[-1][1] if runs else None
+        if dropped and ch in _JOINERS:
+            continue  # the ️ / ZWJ of an emoji that was left out
+        dropped = False
         if cur and (cat in ("Mn", "Mc", "Me") or ch in _JOINERS):
             runs[-1][0] += ch  # marks stay with their letter
             continue
@@ -180,36 +184,76 @@ def _runs(text: str, fnt) -> Optional[list[tuple[str, ImageFont.FreeTypeFont]]]:
         use = next((p for p in chain if _covers(p, ch)), None)
         if use is None:
             if cat[0] == "S" or ch in _JOINERS:
+                dropped = True
                 continue  # emoji and symbols nobody has: leave out
             use = path
         if cur == use:
             runs[-1][0] += ch
         else:
             runs.append([ch, use])
-    return [(t, fnt if p == path else _fallback_font(p, fnt.size)) for t, p in runs]
+    return [(t, fnt if p == path else _fallback_font(p, fnt.size))
+            for t, p in ((t.rstrip() if i == len(runs) - 1 else t, p)
+                         for i, (t, p) in enumerate(runs)) if t]
+
+
+def _clusters(text: str) -> list[tuple[str, str]]:
+    """'ດີ' -> [('ດ', 'ີ')]: each letter with the marks that sit on it."""
+    out: list[list[str]] = []
+    for ch in text:
+        if out and unicodedata.category(ch) in ("Mn", "Me"):
+            out[-1][1] += ch
+        else:
+            out.append([ch, ""])
+    return [(b, m) for b, m in out]
+
+
+def _places_marks(f) -> bool:
+    """Without libraqm (Pillow's basic layout) a fallback font's vowel and tone marks are
+    not put over their letter (Lao "ດີ" draws as "ດ ີ"): the bot places them itself.
+    Kanit's Thai marks are made to overlap, so Kanit does not need this."""
+    return (getattr(f, "layout_engine", None) == ImageFont.Layout.BASIC
+            and not os.path.basename(getattr(f, "path", "") or "").startswith("Kanit-"))
 
 
 class _TextDraw(ImageDraw.ImageDraw):
     """ImageDraw that draws letters Kanit lacks with a fallback font (see _runs)."""
 
+    def _run_width(self, part: str, f) -> float:
+        if not _places_marks(f):
+            return super().textlength(part, f)
+        return sum(super(_TextDraw, self).textlength(base, f) for base, _ in _clusters(part))
+
+    def _draw_run(self, x: float, y: float, part: str, f, fill, *args, **kwargs):
+        if not _places_marks(f):
+            return super().text((x, y), part, fill, f, "ls", *args, **kwargs)
+        for base, marks in _clusters(part):
+            bw = super().textlength(base, f)
+            super().text((x, y), base, fill, f, "ls", *args, **kwargs)
+            bl, _, br, _ = f.getbbox(base, anchor="ls")
+            centre = x + (bl + br) / 2 if br > bl else x + bw / 2
+            for mark in marks:  # the mark's ink centred over the letter's ink
+                ml, _, mr, _ = f.getbbox(mark, anchor="ls")
+                super().text((centre - (ml + mr) / 2, y), mark, fill, f, "ls", *args, **kwargs)
+            x += bw
+
     def textlength(self, text, font=None, *args, **kwargs):
         runs = _runs(text, font) if isinstance(text, str) else None
         if runs is None:
             return super().textlength(text, font, *args, **kwargs)
-        return sum(super(_TextDraw, self).textlength(t, f, *args, **kwargs) for t, f in runs)
+        return sum(self._run_width(t, f) for t, f in runs)
 
     def text(self, xy, text, fill=None, font=None, anchor=None, *args, **kwargs):
         runs = _runs(text, font) if isinstance(text, str) else None
         if runs is None:
             return super().text(xy, text, fill, font, anchor, *args, **kwargs)
         anchor = anchor or "la"
-        widths = [super(_TextDraw, self).textlength(t, f) for t, f in runs]
+        widths = [self._run_width(t, f) for t, f in runs]
         total = sum(widths)
         x = xy[0] - {"m": total / 2, "r": total}.get(anchor[0], 0)
         ascent, descent = font.getmetrics()  # all runs share Kanit's baseline
         y = xy[1] + {"m": (ascent - descent) / 2, "s": 0, "d": -descent}.get(anchor[1], ascent)
         for (part, f), w in zip(runs, widths):
-            super().text((x, y), part, fill, f, "ls", *args, **kwargs)
+            self._draw_run(x, y, part, f, fill, *args, **kwargs)
             x += w
 
 

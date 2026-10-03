@@ -83,7 +83,16 @@ def _link(t: Track) -> str:
     song, artist, _ = _title_parts(t)
     name = _plain(f"{song} · {artist}" if artist and artist.casefold() not in song.casefold()
                   else song, 80)
+    # Discord shows a link whose text has emoji ("ແສນດີ ❤️") as raw [..](..): leave them out
+    name = _no_emoji(name) or "เพลง"
     return f"**[{name}]({t.url})**" if t.url.startswith("http") else f"**{name}**"
+
+
+def _no_emoji(text: str) -> str:
+    import unicodedata
+    out = "".join(ch for ch in text if unicodedata.category(ch) not in ("So", "Sk", "Cs", "Co")
+                  and ch not in "\ufe0e\ufe0f\u200d\u20e3")
+    return " ".join(out.split()).replace(" · ·", " ·").strip(" ·")
 
 
 def build_now_playing(p: "GuildPlayer", card: Optional[str] = None) -> discord.Embed:
