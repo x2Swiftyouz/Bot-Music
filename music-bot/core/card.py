@@ -762,9 +762,24 @@ def _background(g: Geo, theme: str, art: Optional[Image.Image], a1, a2) -> Image
     return canvas
 
 
+FULL_COVER_MIN = 120   # px: smaller covers (thumbnails) are simply cropped
+FULL_COVER_RATIO = 1.2  # wider (or taller) than this vs the box: show the whole picture
+
+
 def _cover(art: Optional[Image.Image], size, accent) -> Image.Image:
+    """The cover in a w x h box. A video thumbnail (16:9) in a square box is shown whole,
+    with a blurred copy of itself filling the space above and below, instead of cropping
+    off its sides (and the text on it, like "Official Video")."""
     w, h = (size, size) if isinstance(size, int) else size
     if art:
+        ratio = (art.width / art.height) / (w / h)
+        if (config.CARD_FULL_COVER and min(w, h) >= FULL_COVER_MIN
+                and not 1 / FULL_COVER_RATIO <= ratio <= FULL_COVER_RATIO):
+            fill = ImageOps.fit(art, (w // 4, h // 4)).filter(ImageFilter.GaussianBlur(4))
+            fill = ImageEnhance.Brightness(fill.resize((w, h), Image.BILINEAR)).enhance(0.6)
+            whole = ImageOps.contain(art, (w, h), Image.LANCZOS)
+            fill.paste(whole, ((w - whole.width) // 2, (h - whole.height) // 2))
+            return fill
         return ImageOps.fit(art, (w, h))
     cover = Image.new("RGB", (w, h), accent)
     s = min(w, h)
@@ -1479,6 +1494,19 @@ def _mood(canvas: Image.Image, st: CardState, accent, accent2):
     return accent, accent2
 
 
+def _pause_mark(canvas: Image.Image, cx: float, cy: float, r: float):
+    """⏸ over the cover while paused: a dark see-through circle with two white bars."""
+    layer = Image.new("RGBA", canvas.size, (0, 0, 0, 0))
+    d = _Draw(layer)
+    d.ellipse((cx - r, cy - r, cx + r, cy + r), fill=(0, 0, 0, 120),
+              outline=(255, 255, 255, 90), width=max(round(r * 0.05), 2))
+    bw, bh, gap = r * 0.2, r * 0.9, r * 0.17
+    for x0 in (cx - gap - bw, cx + gap):
+        d.rounded_rectangle((x0, cy - bh / 2, x0 + bw, cy + bh / 2), bw * 0.35,
+                            fill=(255, 255, 255, 235))
+    canvas.alpha_composite(layer)
+
+
 def _render_mini(track: Track, base: Base, st: CardState) -> bytes:
     g = MINI
     canvas = base.canvas.copy()
@@ -1519,6 +1547,16 @@ LISTENER = 40         # px (the server icon's size): listener avatars in the car
 LISTENER_STEP = 28    # they overlap
 LISTENERS_SHOWN = 5
 LISTENERS_MIN = 2     # one listener is the requester, already shown next to "ขอโดย"
+ICON_GAP = 30         # px between the listeners and the server icon
+HEADPHONES_W = 26
+
+
+def _headphones(d, x: float, cy: float, color):
+    """A small headphones icon (the font has no emoji)."""
+    w = HEADPHONES_W
+    d.arc((x + 2, cy - 12, x + w - 2, cy + 12), 180, 360, fill=color, width=3)
+    d.rounded_rectangle((x, cy - 1, x + 7, cy + 12), 3, fill=color)
+    d.rounded_rectangle((x + w - 7, cy - 1, x + w, cy + 12), 3, fill=color)
 
 
 def _draw_listeners(canvas: Image.Image, g: Geo, avatars, total: int, has_icon: bool):
@@ -1535,11 +1573,13 @@ def _draw_listeners(canvas: Image.Image, g: Geo, avatars, total: int, has_icon: 
     if not width:
         return
     y = 18
+    phones = HEADPHONES_W + 8  # 🎧 in front: these are listeners, not part of the server icon
     if g.center:
-        x = 22
+        x = 22 + phones
     else:
-        right = g.w - 22 - (SERVER_ICON + 14 if has_icon else 0)
+        right = g.w - 22 - (SERVER_ICON + ICON_GAP if has_icon else 0)
         x = right - width
+    _headphones(d, x - phones, y + LISTENER / 2, (225, 225, 235))
     ring = (*_mix((20, 20, 28), (0, 0, 0), 0.2), 255)
     for i, face in enumerate(faces):
         fx = int(x + i * LISTENER_STEP)
@@ -1564,6 +1604,8 @@ def render(track: Track, art_bytes: Optional[bytes], st: CardState = CardState()
     g = _flow(g, base.text_bottom)
     canvas = base.canvas.crop((0, 0, g.w, g.h)) if g.h != base.canvas.height else base.canvas.copy()
     accent, accent2 = _mood(canvas, st, base.accent, base.accent2)
+    if st.paused and st.mode == "play":
+        _pause_mark(canvas, g.art_x + g.art / 2, g.art_y + g.art / 2, g.art * 0.17)
     bg = base.bg
     if icon and st.mode in ("play", "loading", "share"):
         _server_icon(canvas, g, icon)
