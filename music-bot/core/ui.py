@@ -148,7 +148,13 @@ def status_line(p: "GuildPlayer") -> str:
     parts = []
     if hasattr(p, "active_note") and (note := p.active_note()):
         parts.append(note)
-    if p.is_paused:
+    if getattr(p, "away_until", 0) and p.is_paused:
+        if config.UI_STYLE == "groove":  # counts down by itself
+            when = f"ออก <t:{int(p.away_until)}:R>"
+        else:  # embed footers show timestamps as raw text
+            when = f"ออกในอีก {max(int((p.away_until - clock.now()) // 60), 1)} นาที"
+        parts.append(f"💤 หยุดรอคนกลับเข้าห้อง · {when}")
+    elif p.is_paused:
         parts.append("⏸ หยุดอยู่")
     if p.loop_mode == "track":
         parts.append("🔂 วนเพลงนี้")

@@ -51,6 +51,7 @@ DB_PATH = os.getenv("DB_PATH", "data/musicbot.db")
 # Playback limits
 IDLE_TIMEOUT = _int("IDLE_TIMEOUT", 300)          # seconds before leaving an empty queue
 ALONE_TIMEOUT = _int("ALONE_TIMEOUT", 30)         # seconds before leaving an empty channel
+AWAY_TIMEOUT = _int("AWAY_TIMEOUT", 300)          # everyone left mid-song: pause and wait this long (0 = off)
 MAX_QUEUE = _int("MAX_QUEUE", 500)
 MAX_PER_USER = _int("MAX_PER_USER", 100)          # 0 = unlimited
 MAX_DURATION = _int("MAX_DURATION", 0)            # seconds, 0 = unlimited
@@ -64,6 +65,7 @@ YTDL_TIMEOUT = _int("YTDL_TIMEOUT", 45)       # seconds per extraction
 LOG_FILE = os.getenv("LOG_FILE", "data/logs/bot.log")  # "" = console only
 LOG_MAX_MB = max(_int("LOG_MAX_MB", 5), 1)       # per file; LOG_BACKUPS older files are kept
 LOG_BACKUPS = max(_int("LOG_BACKUPS", 3), 0)
+CARD_SERVER_ICON = _bool("CARD_SERVER_ICON", True)  # server icon in the card's corner
 CARD_PROCESS = _bool("CARD_PROCESS", True)     # draw cards in a worker process (no stutter)
 YTDL_PROCESSES = _int("YTDL_PROCESSES", 2)    # yt-dlp worker processes (0 = threads, old way)
 YTDL_DEBUG = _bool("YTDL_DEBUG", False)         # verbose yt-dlp log

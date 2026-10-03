@@ -212,6 +212,9 @@ class GuildPlayer:
         self._card_at = 0.0
         self._blink = False
         self._card_check = True  # see _card_present
+        self.away_token = None   # empty room: see everyone_left / someone_back
+        self.away_paused = False
+        self.away_until = 0.0
         self._tail = None        # (pcm source, gain, http reader): crossfade hand-over
         self._last_edit = 0.0    # timer edits pace themselves (see _pace)
         self._edit_gap = 0.0
@@ -402,6 +405,7 @@ class GuildPlayer:
 
     def toggle_pause(self) -> bool:
         """Return True when now paused."""
+        self.away_paused = False  # a manual pause / resume overrides the automatic one
         vc = self.vc
         if not vc:
             return False
@@ -597,6 +601,30 @@ class GuildPlayer:
         if self.autoplay:
             self._wake.set()  # idle with an empty queue: start right away
         return self.autoplay
+
+    # ------------------------------------------------------ away (empty room)
+    def everyone_left(self) -> object:
+        """Pause a playing song when the room empties (see cogs.music). Returns a token:
+        the leave timer only acts if no newer leave or return happened meanwhile."""
+        self.away_token = token = object()
+        if config.AWAY_TIMEOUT and self.current and not self.is_paused and not self.loading:
+            self.toggle_pause()
+            self.away_paused = True
+            self.away_until = clock.now() + config.AWAY_TIMEOUT
+            asyncio.create_task(self.update_panel())
+        return token
+
+    async def someone_back(self, member):
+        """Someone joined the bot's room: cancel the leave timer, resume if we paused."""
+        self.away_token = None
+        self.away_until = 0.0
+        if self.away_paused:
+            self.away_paused = False
+            if self.is_paused:
+                self.toggle_pause()
+                from core.ui import who_label
+                self.note(f"▶️ {who_label(member)} กลับมา เล่นต่อ")
+        await self.update_panel()
 
     def arm_stop(self, seconds: float):
         """First ⏹ press while others listen: a second press within `seconds` stops."""
@@ -1096,7 +1124,17 @@ class GuildPlayer:
             theme=self.card_theme, layout="mini" if self.compact else self.card_layout,
             mode=mode, reason=reason, avatar=self.avatar_url(t),
             animate=self._animate(mode), views=t._views if t else 0, year=t._year if t else "",
-            night=is_night())
+            night=is_night(), server_icon=self.server_icon_url())
+
+    def server_icon_url(self) -> str:
+        """Small server icon for the card corner ("" = none or CARD_SERVER_ICON off)."""
+        icon = getattr(self.guild, "icon", None)
+        if not config.CARD_SERVER_ICON or icon is None:
+            return ""
+        try:
+            return str(icon.with_size(64).url)
+        except Exception:
+            return ""
 
     def _animate(self, mode: str) -> bool:
         """Moving equalizer: always, never, or (default) only on a song's first card, so

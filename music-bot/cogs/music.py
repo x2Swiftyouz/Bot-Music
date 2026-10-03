@@ -363,14 +363,25 @@ class Music(commands.Cog):
             return
 
         vc = guild.voice_client
-        if not p or not vc or not vc.channel or p.stay_247:
+        if not p or not vc or not vc.channel or member.bot:
             return
-        if before.channel == vc.channel and after.channel != vc.channel:
-            if not p.humans_in_channel():
-                await asyncio.sleep(config.ALONE_TIMEOUT)
-                if self.bot.players.get(guild.id) is p and not p.humans_in_channel():
-                    await p.send("👋 ไม่มีใครอยู่ในห้อง ออกแล้ว")
-                    await p.destroy()
+        if after.channel == vc.channel and before.channel != vc.channel:
+            await p.someone_back(member)  # resume a song paused while nobody was here
+            return
+        if p.stay_247 or not (before.channel == vc.channel and after.channel != vc.channel):
+            return
+        if p.humans_in_channel():
+            return
+        # The last listener left. Mid-song: pause and wait a while (people often step out
+        # for a moment). Otherwise leave after the short ALONE_TIMEOUT as before.
+        token = p.everyone_left()
+        wait = config.AWAY_TIMEOUT if p.away_until else config.ALONE_TIMEOUT
+        await asyncio.sleep(wait)
+        if (self.bot.players.get(guild.id) is p and p.away_token is token
+                and not p.humans_in_channel()):
+            await p.send("👋 ไม่มีใครกลับมาในห้อง ออกแล้ว" if p.away_until
+                         else "👋 ไม่มีใครอยู่ในห้อง ออกแล้ว")
+            await p.destroy()
 
     # ------------------------------------------------------------ restore
     async def restore_all(self):

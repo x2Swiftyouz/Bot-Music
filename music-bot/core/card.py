@@ -132,6 +132,7 @@ class CardState:
     avatar: str = ""            # requester's avatar URL (drawn before "ขอโดย")
     animate: bool = False       # play mode: moving equalizer (animated WebP)
     night: bool = False         # late hours: a darker card
+    server_icon: str = ""       # the server's icon URL, shown small in the top-right corner
     views: int = 0              # view count chip (0 = none)
     year: str = ""              # release year chip
 
@@ -363,6 +364,8 @@ def _icon(d: ImageDraw.ImageDraw, kind: str, x: float, cy: float, color, muted=F
         d.line(box(0, -2, 15, -2), fill=color, width=w2)
         d.line(box(4, -9, 4, -5), fill=color, width=w2)
         d.line(box(11, -9, 11, -5), fill=color, width=w2)
+    elif kind == "chapter":  # a bookmark
+        d.polygon([P(2, -8), P(13, -8), P(13, 8), P(7.5, 3.5), P(2, 8)], fill=color)
     elif kind == "cake":
         d.rounded_rectangle(box(0, 0, 16, 7), 2, fill=color)
         d.rectangle(box(7, -6, 9, 0), fill=color)
@@ -822,6 +825,14 @@ def _chip_colors(accent) -> tuple[tuple, tuple]:
     return (*base, 215), _readable((245, 245, 250), base)
 
 
+CHAPTER_CHARS = 22
+
+
+def _short(text: str, limit: int) -> str:
+    text = " ".join(text.split())
+    return text if len(text) <= limit else text[:limit - 1].rstrip() + "…"
+
+
 def _volume_chip(volume: int, soft=(255, 255, 255, 38), text=(240, 240, 245)) -> tuple:
     if volume >= 130:
         fill, color = (*RED, 215), WHITE
@@ -1082,8 +1093,25 @@ def _render_mini(track: Track, base: Base, st: CardState) -> bytes:
     return _encode(canvas)
 
 
+SERVER_ICON = 40  # px (wide card; the square card uses the same size)
+
+
+def _server_icon(canvas: Image.Image, g: Geo, icon: Optional[bytes]):
+    """The server's icon, round, in the top-right corner: which server this card is from."""
+    img = _avatar(icon, SERVER_ICON)
+    if img is None:
+        return
+    x, y = g.w - SERVER_ICON - 22, 18
+    ring = Image.new("RGBA", canvas.size, (0, 0, 0, 0))
+    ImageDraw.Draw(ring).ellipse((x - 2, y - 2, x + SERVER_ICON + 2, y + SERVER_ICON + 2),
+                                 fill=(255, 255, 255, 70))
+    canvas.alpha_composite(ring)
+    canvas.alpha_composite(img, (x, y))
+
+
 def render(track: Track, art_bytes: Optional[bytes], st: CardState = CardState(),
-           next_art: Optional[bytes] = None, avatar: Optional[bytes] = None) -> bytes:
+           next_art: Optional[bytes] = None, avatar: Optional[bytes] = None,
+           icon: Optional[bytes] = None) -> bytes:
     g = GEOS.get(st.layout, WIDE)
     theme = st.theme if st.theme in THEMES else "blur"
     base = _render_base(track, art_bytes, g, theme, None if g is MINI else avatar, st.night)
@@ -1093,6 +1121,8 @@ def render(track: Track, art_bytes: Optional[bytes], st: CardState = CardState()
     canvas = base.canvas.crop((0, 0, g.w, g.h)) if g.h != base.canvas.height else base.canvas.copy()
     accent, accent2 = _mood(canvas, st, base.accent, base.accent2)
     bg = base.bg
+    if icon and st.mode in ("play", "loading", "share"):
+        _server_icon(canvas, g, icon)
     glow = theme == "neon"
     if st.mode == "error":
         canvas.alpha_composite(Image.new("RGBA", canvas.size, (120, 0, 0, 70)))
@@ -1125,6 +1155,9 @@ def render(track: Track, art_bytes: Optional[bytes], st: CardState = CardState()
     soft, chip_text = _chip_colors(accent)
     if st.mode == "play":
         chips = [_volume_chip(st.volume, soft, chip_text)]
+        chapter_now = current_chapter(track, st.position)
+        if chapter_now:  # the part of the song playing now, e.g. "Chorus"
+            chips.append(("chapter", _short(chapter_now, CHAPTER_CHARS), soft, chip_text, False))
         if st.loop != "off":
             chips.append(("loop", "เพลง" if st.loop == "track" else "คิว", soft, chip_text, False))
         if st.queue_len:
@@ -1147,7 +1180,9 @@ def render(track: Track, art_bytes: Optional[bytes], st: CardState = CardState()
     else:
         ratio = min(max(st.position / track.duration, 0), 1)
         _draw_wave(canvas, g, track, ratio, accent, accent2, bg, glow)
-        _draw_times(canvas, g, fmt_time(st.position), _right_time(track, st), middle=chapter)
+        # the chapter is a chip above when it is a playing card; the share card keeps it here
+        _draw_times(canvas, g, fmt_time(st.position), _right_time(track, st),
+                    middle="" if st.mode == "play" else chapter)
     if eq_spot and st.animate and ANIMATED:
         return _encode_eq(canvas, eq_spot)
     if eq_spot and st.animate:  # no animation support: still bars
@@ -1463,10 +1498,10 @@ async def _run(func, *args):
         loop.run_in_executor(None, functools.partial(func, *args)), timeout=8)
 
 
-def _job_render(track, art, state, next_art, avatar):
+def _job_render(track, art, state, next_art, avatar, icon=None):
     """In the card process: the card, plus the cover colour the bot uses for the panel."""
     started = time.perf_counter()
-    data = render(track, art, state, next_art, avatar)
+    data = render(track, art, state, next_art, avatar, icon)
     return data, _accents.get(track.url), time.perf_counter() - started
 
 
@@ -1485,10 +1520,10 @@ def _remember_accent(track: Track, accent: Optional[int]):
 
 async def make_card(track: Track, state: CardState = CardState()) -> Optional[bytes]:
     try:
-        art, next_art, avatar = await asyncio.gather(
+        art, next_art, avatar, icon = await asyncio.gather(
             fetch_track_art(track), fetch_art(state.next_thumb or None),
-            fetch_art(state.avatar or None))
-        data, accent, took = await _run(_job_render, track, art, state, next_art, avatar)
+            fetch_art(state.avatar or None), fetch_art(state.server_icon or None))
+        data, accent, took = await _run(_job_render, track, art, state, next_art, avatar, icon)
         _remember_accent(track, accent)
         if took > SLOW_RENDER:
             log.info("card took %.2fs to draw (%s%s)", took, state.layout,
