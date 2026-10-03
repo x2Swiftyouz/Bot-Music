@@ -69,6 +69,10 @@ CARD_REFRESH = _int("CARD_REFRESH", 10)          # seconds between card re-uploa
 CARD_ANIMATION = os.getenv("CARD_ANIMATION", "start" if _bool("CARD_ANIMATED", True) else "off")
 CARD_ANIMATION = CARD_ANIMATION.strip().lower()
 CARD_ANIMATION_SECONDS = 8  # "start": cards drawn in the first seconds of a song move
+YTDLP_UPDATE_HOURS = _int("YTDLP_UPDATE_HOURS", 24)  # check for a new yt-dlp (0 = off)
+NIGHT_MODE = _bool("NIGHT_MODE", True)            # darker card late at night (TIMEZONE)
+NIGHT_HOURS = os.getenv("NIGHT_HOURS", "22-6")     # start-end hour, wraps past midnight
+STICKY_PANEL = _int("STICKY_PANEL", 10)           # re-post the panel below after N chat messages (0 = off)
 LYRICS_PREFETCH = _bool("LYRICS_PREFETCH", True)  # look lyrics up when a song starts (🎤 state)
 SESSION_SUMMARY = _bool("SESSION_SUMMARY", True)  # recap card when the session ends
 HOT_THRESHOLD = _int("HOT_THRESHOLD", 5)         # plays in a server for the "hit" badge

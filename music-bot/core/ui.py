@@ -165,6 +165,8 @@ def status_line(p: "GuildPlayer") -> str:
         parts.append("🎚 ความดังเท่ากัน")
     if p.stay_247:
         parts.append("🌙 24/7")
+    if getattr(p, "fair_queue", False) and p.queue:
+        parts.append("⚖️ ผลัดกันเล่น")
     if p.skip_votes:
         parts.append(f"🗳 โหวตข้าม {len(p.skip_votes)}/{p.skip_need()}")
     return " · ".join(parts)
@@ -224,11 +226,69 @@ class RequestIdleView(discord.ui.View):
         await act_add(inter)
 
 
-def build_idle_embed() -> discord.Embed:
+def build_idle_embed(with_buttons: bool = False) -> discord.Embed:
     e = discord.Embed(color=SOURCE_COLORS["other"])
     e.title = "⏹ จบคิวแล้ว"
-    e.description = "ใช้ `/play` เพื่อเล่นต่อ"
+    e.description = ("เล่นซ้ำเพลงล่าสุด เปิด 📻 Autoplay หรือเพิ่มเพลงใหม่ได้จากปุ่มด้านล่าง"
+                     if with_buttons else "ใช้ `/play` เพื่อเล่นต่อ")
     return e
+
+
+IDLE_REPLAYS = 3
+
+
+class IdleView(discord.ui.View):
+    """Under "queue ended": replay one of the last songs, turn on autoplay, or add a song."""
+
+    def __init__(self, p: "GuildPlayer"):
+        super().__init__(timeout=max(config.IDLE_TIMEOUT or 0, 300))
+        self.guild_id = p.guild.id
+        seen, self.recent = set(), []
+        for t in reversed(p.history):
+            if t.url not in seen and t.url.startswith("http"):
+                seen.add(t.url)
+                self.recent.append(t)
+            if len(self.recent) >= IDLE_REPLAYS:
+                break
+        for i, t in enumerate(self.recent):
+            button = discord.ui.Button(emoji="▶️", label=_plain(t.name, 70) or "เพลง",
+                                       style=discord.ButtonStyle.secondary, row=0)
+            button.callback = self._replay(t)
+            self.add_item(button)
+        self.autoplay_btn.disabled = getattr(p, "autoplay", False) or not self.recent
+
+    def _replay(self, track: Track):
+        async def callback(inter: discord.Interaction):
+            music = inter.client.get_cog("Music")
+            copy = Track.from_dict(track.to_dict())
+            try:
+                music.check_cooldown(inter.user.id)
+                await inter.response.defer(ephemeral=True, thinking=True)
+                embed = await music.enqueue(inter.user, inter.channel, copy.url, tracks=[copy])
+            except UserError as exc:
+                if inter.response.is_done():
+                    return await inter.followup.send(f"⚠️ {exc}", ephemeral=True)
+                return await inter.response.send_message(f"⚠️ {exc}", ephemeral=True)
+            await inter.followup.send(embed=embed, ephemeral=True)
+            await audit_inter(inter, "replay (queue end)", copy.url)
+        return callback
+
+    @discord.ui.button(emoji="📻", label="เปิด Autoplay", style=discord.ButtonStyle.secondary, row=1)
+    async def autoplay_btn(self, inter: discord.Interaction, button: discord.ui.Button):
+        p = inter.client.players.get(inter.guild_id)
+        if not p:
+            return await inter.response.send_message("บอทออกจากห้องแล้ว ใช้ `/play` เพื่อเริ่มใหม่",
+                                                     ephemeral=True)
+        if not p.autoplay:
+            p.toggle_autoplay()
+            await inter.client.db.set_setting(inter.guild_id, "autoplay", 1)
+        button.disabled = True
+        await inter.response.edit_message(view=self)
+        await audit_inter(inter, "autoplay", "on (queue end)")
+
+    @discord.ui.button(emoji="➕", label="เพิ่มเพลง", style=discord.ButtonStyle.success, row=1)
+    async def add_btn(self, inter: discord.Interaction, _):
+        await inter.response.send_modal(AddSongModal())
 
 
 def queue_items(p: "GuildPlayer", query: str = "") -> list[tuple[int, Track]]:

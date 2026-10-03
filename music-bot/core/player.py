@@ -112,6 +112,18 @@ def _now() -> datetime.datetime:
         return datetime.datetime.fromtimestamp(clock.now())
 
 
+def is_night(hour: Optional[int] = None) -> bool:
+    """NIGHT_MODE between NIGHT_HOURS ("22-6" = 22:00 to 05:59, in TIMEZONE)."""
+    if not config.NIGHT_MODE:
+        return False
+    try:
+        start, end = (int(x) % 24 for x in config.NIGHT_HOURS.split("-"))
+    except ValueError:
+        return False
+    h = _now().hour if hour is None else hour
+    return start <= h < end if start < end else h >= start or h < end
+
+
 def _today() -> datetime.date:
     return _now().date()
 
@@ -122,7 +134,8 @@ def clock_after(seconds: float) -> str:
 
 
 TIME_MODES = ("length", "remaining", "clock")
-NO_PINGS = discord.AllowedMentions.none()  # the panel names people (status line), never pings
+NO_PINGS = discord.AllowedMentions.none()
+STICKY_MIN_GAP = 20  # seconds: a busy chat must not make the panel jump down constantly  # the panel names people (status line), never pings
 
 
 def _media_urls(components) -> list[str]:
@@ -174,6 +187,9 @@ class GuildPlayer:
         self.normalize = bool(settings.get("normalize"))
         self.auto_clean = bool(settings.get("auto_clean"))
         self.autoplay = bool(settings.get("autoplay"))  # 📻 similar songs when the queue ends
+        self.fair_queue = bool(settings.get("fair_queue"))  # ⚖️ requesters take turns
+        self.since_panel = 0     # chat messages posted below the panel (sticky panel)
+        self._panel_sent_at = 0.0
         self._last_played: Optional[Track] = None
         self.request_channel_id = settings.get("request_channel") or 0
         self.request_message_id = settings.get("request_message") or 0
@@ -294,12 +310,35 @@ class GuildPlayer:
         tracks = tracks[:room]
         if front:
             self.queue.extendleft(reversed(tracks))
+        elif self.fair_queue:
+            for t in tracks:
+                self._insert_fair(t)
         else:
             self.queue.extend(tracks)
         self._wake.set()
         if tracks:
             asyncio.create_task(self.save_state())
         return len(tracks)
+
+    def _insert_fair(self, track: Track):
+        """Fair queue: a requester's n-th waiting song goes after everyone's n-th song, so
+        people take turns instead of one long batch playing first."""
+        seen: dict[int, int] = {}
+        rounds = []
+        for q in self.queue:
+            r = seen.get(q.requester_id, 0)
+            rounds.append(r)
+            seen[q.requester_id] = r + 1
+        mine = seen.get(track.requester_id, 0)
+        pos = next((i for i, r in enumerate(rounds) if r > mine), len(self.queue))
+        self.queue.insert(pos, track)
+
+    def position_of(self, track: Track) -> int:
+        """0-based place of this exact track object in the queue (-1 = not there)."""
+        for i, q in enumerate(self.queue):
+            if q is track:
+                return i
+        return -1
 
     def user_track_count(self, user_id: int) -> int:
         return sum(1 for t in self.queue if t.requester_id == user_id)
@@ -916,7 +955,7 @@ class GuildPlayer:
                 # cover its "up next" row will show, so the next panel appears at once.
                 from core.card import fetch_art, warm
                 layout = "mini" if self.compact else self.card_layout
-                await warm(nxt, self.card_theme, layout, self.avatar_url(nxt))
+                await warm(nxt, self.card_theme, layout, self.avatar_url(nxt), is_night())
                 if len(self.queue) > 1:
                     await fetch_art(self.queue[1].thumbnail)
 
@@ -958,7 +997,8 @@ class GuildPlayer:
             hot=self.track_plays, birthday=self.requester_birthday, blink=self._blink,
             theme=self.card_theme, layout="mini" if self.compact else self.card_layout,
             mode=mode, reason=reason, avatar=self.avatar_url(t),
-            animate=self._animate(mode), views=t._views if t else 0, year=t._year if t else "")
+            animate=self._animate(mode), views=t._views if t else 0, year=t._year if t else "",
+            night=is_night())
 
     def _animate(self, mode: str) -> bool:
         """Moving equalizer: always, never, or (default) only on a song's first card, so
@@ -1152,8 +1192,26 @@ class GuildPlayer:
         async with self._panel_lock:
             await self._send_panel(loading)
 
+    def chat_message(self, message: discord.Message):
+        """A message was posted in a channel. After STICKY_PANEL of them below the panel,
+        post the panel again at the bottom so it never scrolls out of sight."""
+        panel = self.panel_message
+        if (not config.STICKY_PANEL or not panel or not self.current or self.loading
+                or self._is_request_panel()):
+            return
+        channel = getattr(panel, "channel", None)
+        if channel is None or message.channel.id != channel.id or message.id == panel.id:
+            return
+        self.since_panel += 1
+        if (self.since_panel >= config.STICKY_PANEL and not self._panel_lock.locked()
+                and time.monotonic() - self._panel_sent_at > STICKY_MIN_GAP):
+            self.since_panel = 0
+            asyncio.create_task(self.send_panel())
+
     async def _send_panel(self, loading: bool):
         from core.ui import build_now_playing
+        self.since_panel = 0
+        self._panel_sent_at = time.monotonic()
         self.loading = loading
         card = await self._card_file(mode="loading" if loading else "play")
         self.has_card = card is not None
@@ -1243,8 +1301,9 @@ class GuildPlayer:
                     await self.panel_message.edit(embed=build_request_idle_embed(),
                                                   view=RequestIdleView(), attachments=[])
                 else:
-                    await self.panel_message.edit(embed=build_idle_embed(), view=None,
-                                                  attachments=[])
+                    from core.ui import IdleView
+                    await self.panel_message.edit(embed=build_idle_embed(with_buttons=True),
+                                                  view=IdleView(self), attachments=[])
                     if self.auto_clean:  # "queue ended" goes away by itself
                         await self.panel_message.delete(delay=config.AUTO_CLEAN_SECONDS)
                 self.panel_message = None

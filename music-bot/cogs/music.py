@@ -96,6 +96,8 @@ class Music(commands.Cog):
         added = player.add(tracks, front=front)
         if added == 0:
             raise UserError(f"คิวเต็ม (สูงสุด {config.MAX_QUEUE})")
+        if player.fair_queue and not front:  # taking turns may place it earlier
+            index = max(player.position_of(tracks[0]), 0)
         what = tracks[0].name[:40] if added == 1 else f"{added} เพลง"
         player.note(f"➕ {who_label(member)} เพิ่ม {what}")
         return build_added_embed(player, tracks[:added], index, label)
@@ -339,6 +341,14 @@ class Music(commands.Cog):
         await inter.response.send_message("🔄 เล่นใหม่")
 
     # ------------------------------------------------------- voice events
+    @commands.Cog.listener()
+    async def on_message(self, msg: discord.Message):
+        """Sticky panel: count chat below the panel (see GuildPlayer.chat_message)."""
+        if not msg.guild or msg.author.id == getattr(self.bot.user, "id", None):
+            return
+        if p := self.bot.players.get(msg.guild.id):
+            p.chat_message(msg)
+
     @commands.Cog.listener()
     async def on_voice_state_update(self, member: discord.Member, before, after):
         guild = member.guild

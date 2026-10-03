@@ -124,6 +124,15 @@ class Settings(commands.GroupCog, group_name="settings", group_description="ต�
             f"🧹 ลบข้อความอัตโนมัติ: {'เปิด' if enabled else 'ปิด'}"
             + (f" (หลัง {config.AUTO_CLEAN_SECONDS} วินาที)" if enabled else ""), ephemeral=True)
 
+    @app_commands.command(description="ผลัดกันเล่น: เพลงของแต่ละคนสลับกันในคิว ไม่ให้ใครยึดคิวยาว")
+    async def fairqueue(self, inter: discord.Interaction, enabled: bool):
+        await self.bot.db.set_setting(inter.guild_id, "fair_queue", int(enabled))
+        if p := self._player(inter.guild_id):
+            p.fair_queue = enabled
+        await inter.response.send_message(
+            f"⚖️ ผลัดกันเล่น: {'เปิด (เพลงที่เพิ่มต่อจากนี้จะสลับตามคน)' if enabled else 'ปิด'}",
+            ephemeral=True)
+
     @app_commands.command(description="ดูค่าทั้งหมด")
     async def show(self, inter: discord.Interaction):
         s = await self.bot.db.get_settings(inter.guild_id)
@@ -138,6 +147,8 @@ class Settings(commands.GroupCog, group_name="settings", group_description="ต�
         e.add_field(name="เวลา", value=("ความยาวเพลง", "เวลาที่เหลือ", "เวลาที่จบ")[
             int(s["time_remaining"] or 0) % 3])
         e.add_field(name="ความดังเท่ากัน", value=on(s["normalize"]))
+        e.add_field(name="ผลัดกันเล่น", value=on(s["fair_queue"]))
+        e.add_field(name="Autoplay", value=on(s["autoplay"]))
         e.add_field(name="ลบข้อความอัตโนมัติ", value=on(s["auto_clean"]))
         e.add_field(name="ห้องขอเพลง",
                     value=f"<#{s['request_channel']}>" if s["request_channel"] else "ปิด")

@@ -2,7 +2,9 @@
 
 import asyncio
 import logging
+import os
 import signal
+import sys
 import time
 
 import discord
@@ -17,7 +19,7 @@ if config.UI_STYLE == "groove":
     look.install()  # before anything sends a message
 
 from core.checks import UserError  # noqa: E402
-from core import card, clean, clock, lyrics
+from core import card, clean, clock, lyrics, updater
 from core.db import Database
 from core.player import GuildPlayer
 from core.sources import spotify
@@ -69,6 +71,8 @@ class MusicBot(commands.Bot):
         synced = await self.tree.sync()
         log.info("Synced %d slash commands", len(synced))
         await self._start_health()
+        self.restart_requested = False
+        self._updater = asyncio.create_task(updater.loop(self))
         try:
             loop = asyncio.get_running_loop()
             for sig in (signal.SIGTERM, signal.SIGINT):
@@ -182,6 +186,11 @@ def main():
         raise SystemExit(
             "Enable 'Message Content Intent' in the Developer Portal, "
             "or set MESSAGE_CONTENT=false in .env")
+    if getattr(bot, "restart_requested", False):
+        # a new yt-dlp was installed: start again in this same process (works in Docker,
+        # systemd and a plain terminal alike)
+        log.info("Restarting…")
+        os.execv(sys.executable, [sys.executable] + sys.argv)
 
 
 if __name__ == "__main__":

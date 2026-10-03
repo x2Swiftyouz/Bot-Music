@@ -18,7 +18,8 @@ from dataclasses import dataclass
 from typing import Optional
 
 import aiohttp
-from PIL import Image, ImageDraw, ImageFilter, ImageFont, ImageOps, ImageStat, features
+from PIL import (Image, ImageDraw, ImageEnhance, ImageFilter, ImageFont, ImageOps, ImageStat,
+                 features)
 
 import config
 from core.sources import SOURCE_COLORS, Track, detect_source, fmt_time
@@ -125,6 +126,7 @@ class CardState:
     reason: str = ""
     avatar: str = ""            # requester's avatar URL (drawn before "ขอโดย")
     animate: bool = False       # play mode: moving equalizer (animated WebP)
+    night: bool = False         # late hours: a darker card
     views: int = 0              # view count chip (0 = none)
     year: str = ""              # release year chip
 
@@ -565,10 +567,10 @@ def _who(canvas: Image.Image, d: ImageDraw.ImageDraw, x: float, y: float, text: 
 
 
 def _render_base(track: Track, art_bytes: Optional[bytes], g: Geo, theme: str,
-                 avatar_bytes: Optional[bytes] = None) -> Base:
+                 avatar_bytes: Optional[bytes] = None, night: bool = False) -> Base:
     """Static part (background, cover, title, artist, requester). Cached per track."""
     key = (track.url, track.title, track.artist, track.requester_name,
-           len(art_bytes or b""), len(avatar_bytes or b""), g, theme)
+           len(art_bytes or b""), len(avatar_bytes or b""), g, theme, night)
     if key in _base_cache:
         _base_cache.move_to_end(key)
         return _base_cache[key]
@@ -584,6 +586,9 @@ def _render_base(track: Track, art_bytes: Optional[bytes], g: Geo, theme: str,
         _paste_cover(canvas, _cover(art, g.art, a1), g.art_x, g.art_y, radius=14)
     else:
         ART_BLOCKS.get(theme, _art_plain)(canvas, g, art, a1, track)
+
+    if night:  # darker background and cover; the text drawn next stays bright
+        canvas.alpha_composite(Image.new("RGBA", canvas.size, NIGHT_SHADE))
 
     # Text colours checked against the real background behind the text column.
     region = (0, g.label_y, g.w, g.h) if g.center else (g.x0, 0, g.w, g.h)
@@ -1013,9 +1018,32 @@ def _encode(canvas: Image.Image) -> bytes:
     return out.getvalue()
 
 
+PAUSED_COLOR = 0.12  # colour left in a paused card
+NIGHT_SHADE = (4, 4, 14, 80)
+
+
+def _grey(c) -> tuple[int, int, int]:
+    v = int(0.3 * c[0] + 0.59 * c[1] + 0.11 * c[2])
+    return _mix(c, (v, v, v), 1 - PAUSED_COLOR)
+
+
+def _mood(canvas: Image.Image, st: CardState, accent, accent2):
+    """Paused: almost no colour, so it reads as stopped at a glance (night is part of the
+    base, see _render_base). Applied before the live parts are drawn. Returns accents."""
+    if st.paused and st.mode == "play":
+        rgb = ImageEnhance.Color(canvas.convert("RGB")).enhance(PAUSED_COLOR)
+        rgb = ImageEnhance.Brightness(rgb).enhance(0.8)
+        alpha = canvas.getchannel("A")
+        canvas.paste(rgb.convert("RGBA"))
+        canvas.putalpha(alpha)
+        accent, accent2 = _grey(accent), _grey(accent2)
+    return accent, accent2
+
+
 def _render_mini(track: Track, base: Base, st: CardState) -> bytes:
     g = MINI
     canvas = base.canvas.copy()
+    _mood(canvas, st, base.accent, base.accent2)
     if st.paused:  # small pause mark on the cover
         d = ImageDraw.Draw(canvas)
         cx, cy = g.art_x + g.art / 2, g.art_y + g.art / 2
@@ -1036,12 +1064,13 @@ def render(track: Track, art_bytes: Optional[bytes], st: CardState = CardState()
            next_art: Optional[bytes] = None, avatar: Optional[bytes] = None) -> bytes:
     g = GEOS.get(st.layout, WIDE)
     theme = st.theme if st.theme in THEMES else "blur"
-    base = _render_base(track, art_bytes, g, theme, None if g is MINI else avatar)
+    base = _render_base(track, art_bytes, g, theme, None if g is MINI else avatar, st.night)
     if g is MINI:
         return _render_mini(track, base, st)
     g = _flow(g, base.text_bottom)
     canvas = base.canvas.crop((0, 0, g.w, g.h)) if g.h != base.canvas.height else base.canvas.copy()
-    accent, accent2, bg = base.accent, base.accent2, base.bg
+    accent, accent2 = _mood(canvas, st, base.accent, base.accent2)
+    bg = base.bg
     glow = theme == "neon"
     if st.mode == "error":
         canvas.alpha_composite(Image.new("RGBA", canvas.size, (120, 0, 0, 70)))
@@ -1372,14 +1401,14 @@ async def make_card(track: Track, state: CardState = CardState()) -> Optional[by
         return None
 
 
-async def warm(track: Track, theme: str, layout: str, avatar: str = ""):
+async def warm(track: Track, theme: str, layout: str, avatar: str = "", night: bool = False):
     """Pre-render the static part of a card (download cover, blur, palette, title)
     before the track starts, so its panel appears without waiting."""
     try:
         art, av = await asyncio.gather(fetch_track_art(track), fetch_art(avatar or None))
         g = GEOS.get(layout, WIDE)
         await _run(lambda: _render_base(track, art, g, theme if theme in THEMES else "blur",
-                                        None if g is MINI else av))
+                                        None if g is MINI else av, night))
     except Exception as exc:
         log.debug("card warm-up failed: %s", exc)
 
