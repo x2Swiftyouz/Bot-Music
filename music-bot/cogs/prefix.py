@@ -9,7 +9,7 @@ import discord
 from discord.ext import commands
 
 import config
-from core import clean
+from core import clean, clock
 from cogs.info import HelpView, about_embed, help_embed, ping_embed
 from core.checks import UserError, control_member
 from core.player import LOOP_MODES
@@ -50,6 +50,7 @@ class Prefix(commands.Cog):
 
     @commands.Cog.listener()
     async def on_message(self, msg: discord.Message):
+        clock.observe(msg)  # every message carries Discord's time
         if msg.author.bot or not msg.guild or not msg.content:
             return
         content = msg.content.strip()

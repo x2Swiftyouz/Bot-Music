@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING, Awaitable, Callable, Optional
 import discord
 
 import config
+from core import clock
 from core.checks import UserError, control
 from core.lyrics import Lyrics
 from core.sources import SOURCE_COLORS, Track, detect_source, fmt_time
@@ -39,7 +40,7 @@ def end_timestamp(p: "GuildPlayer") -> Optional[int]:
     t = p.current
     if not t or not t.duration or p.is_paused:
         return None
-    end = int(time.time() + t.duration - p.position)
+    end = int(clock.now() + t.duration - p.position)
     old = getattr(p, "_end_ts", None)
     if old is None or abs(old - end) > END_TS_SLACK:
         p._end_ts = old = end
@@ -927,4 +928,4 @@ def relative_ts(seconds_from_now: Optional[int]) -> str:
         return "ไม่ทราบ"
     if seconds_from_now <= 0:
         return "ตอนนี้"
-    return f"<t:{int(time.time() + seconds_from_now)}:R>"
+    return f"<t:{int(clock.now() + seconds_from_now)}:R>"

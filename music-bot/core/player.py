@@ -17,6 +17,7 @@ from typing import TYPE_CHECKING, Optional
 import discord
 
 import config
+from core import clock
 from core.sources import Track, fmt_time, resolve_stream
 from core.audio import CountingSource, SmoothVolume
 from core.stream import HTTPStreamReader
@@ -103,11 +104,12 @@ class _OpusAudio(discord.FFmpegOpusAudio):
 
 
 def _now() -> datetime.datetime:
+    """Now in TIMEZONE, by Discord's clock (see core.clock)."""
     try:
         from zoneinfo import ZoneInfo
-        return datetime.datetime.now(ZoneInfo(config.TIMEZONE))
+        return datetime.datetime.fromtimestamp(clock.now(), ZoneInfo(config.TIMEZONE))
     except Exception:  # no tz database (Windows without tzdata)
-        return datetime.datetime.now()
+        return datetime.datetime.fromtimestamp(clock.now())
 
 
 def _today() -> datetime.date:
@@ -1000,6 +1002,7 @@ class GuildPlayer:
             except discord.NotFound:
                 pass
         msg = await channel.send(embed=embed, view=view, **({"file": card} if card else {}))
+        clock.observe(msg)
         self.request_message_id = msg.id
         await self.bot.db.set_setting(self.guild.id, "request_message", msg.id)
         return msg
@@ -1028,6 +1031,7 @@ class GuildPlayer:
             # the panel itself is never auto-deleted while it is live
             self.panel_message = await self.send(embed=embed, view=self.make_view(),
                                                  delete_after=None, **kwargs)
+            clock.observe(self.panel_message)
         except discord.HTTPException as exc:
             log.debug("send_panel failed: %s", exc)
 
@@ -1055,7 +1059,7 @@ class GuildPlayer:
                 if not kwargs and sig == self._panel_sig:
                     return  # nothing visible changed (e.g. paused or live)
                 if self.panel_message:
-                    await self.panel_message.edit(embed=embed, view=view, **kwargs)
+                    clock.observe(await self.panel_message.edit(embed=embed, view=view, **kwargs))
                     self._panel_sig = sig
             else:
                 self.has_card = False

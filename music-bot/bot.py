@@ -17,7 +17,7 @@ if config.UI_STYLE == "groove":
     look.install()  # before anything sends a message
 
 from core.checks import UserError  # noqa: E402
-from core import card, clean, lyrics
+from core import card, clean, clock, lyrics
 from core.db import Database
 from core.player import GuildPlayer
 from core.sources import spotify
@@ -82,6 +82,9 @@ class MusicBot(commands.Bot):
         if not self._restored:
             self._restored = True
             asyncio.create_task(self.get_cog("Music").restore_all())
+
+    async def on_interaction(self, inter: discord.Interaction):
+        clock.observe(inter)  # carries Discord's time: keeps countdowns right
 
     async def on_app_command_completion(self, inter: discord.Interaction, command):
         """Audit log: every successful slash command with its options."""
