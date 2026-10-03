@@ -178,6 +178,11 @@ def setup_log_file():
         return
     try:
         os.makedirs(os.path.dirname(config.LOG_FILE) or ".", exist_ok=True)
+        if config.LOG_FRESH:  # every start begins a new log: old runs and their backups go
+            for i in range(config.LOG_BACKUPS + 10):
+                old = config.LOG_FILE + (f".{i}" if i else "")
+                if os.path.exists(old):
+                    os.remove(old)
         handler = RotatingFileHandler(config.LOG_FILE, maxBytes=config.LOG_MAX_MB * 1024 * 1024,
                                       backupCount=config.LOG_BACKUPS, encoding="utf-8")
     except OSError as exc:

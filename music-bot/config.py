@@ -65,6 +65,7 @@ YTDL_TIMEOUT = _int("YTDL_TIMEOUT", 45)       # seconds per extraction
 LOG_FILE = os.getenv("LOG_FILE", "data/logs/bot.log")  # "" = console only
 LOG_MAX_MB = max(_int("LOG_MAX_MB", 5), 1)       # per file; LOG_BACKUPS older files are kept
 LOG_BACKUPS = max(_int("LOG_BACKUPS", 3), 0)
+LOG_FRESH = _bool("LOG_FRESH", True)              # start a new log file on every start
 CARD_SERVER_ICON = _bool("CARD_SERVER_ICON", True)  # server icon in the card's corner
 CARD_PROCESS = _bool("CARD_PROCESS", True)     # draw cards in a worker process (no stutter)
 YTDL_PROCESSES = _int("YTDL_PROCESSES", 2)    # yt-dlp worker processes (0 = threads, old way)

@@ -234,6 +234,7 @@ docker compose up -d --build              # Docker: สร้าง image ให
 | `AUTOCOMPLETE` | `true` | ค้นหาสดระหว่างพิมพ์ `/play` |
 | `YTDL_TIMEOUT` | `45` | เวลาสูงสุดต่อการค้นหนึ่งครั้ง (วินาที) |
 | `LOG_FILE` | `data/logs/bot.log` | เก็บ log ลงไฟล์ด้วย (หมุนไฟล์ทุก `LOG_MAX_MB`=5 MB เก็บย้อนหลัง `LOG_BACKUPS`=3 ไฟล์, ว่าง = ปิด) |
+| `LOG_FRESH` | `true` | ลบ log เก่าทุกครั้งที่เปิดบอท ไฟล์จะมีแค่รอบที่รันอยู่ (`false` = เขียนต่อท้าย) |
 | `CARD_PROCESS` | `true` | วาดการ์ดใน process แยกที่ priority ต่ำ เสียงไม่กระตุกตอนวาดการ์ด |
 | `YTDL_PROCESSES` | `2` | ค้นเพลงด้วย yt-dlp ใน process แยก เสียงไม่กระตุกตอนมีคนเพิ่มเพลง (`0` = ใช้ thread แบบเดิม) |
 | `YTDL_DEBUG` | `false` | log ของ yt-dlp แบบละเอียด |
