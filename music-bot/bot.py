@@ -19,7 +19,7 @@ if config.UI_STYLE == "groove":
     look.install()  # before anything sends a message
 
 from core.checks import UserError  # noqa: E402
-from core import card, clean, clock, lyrics, updater
+from core import card, clean, clock, lyrics, ratelimit, updater
 from core.db import Database
 from core.player import GuildPlayer
 from core.sources import spotify
@@ -71,6 +71,7 @@ class MusicBot(commands.Bot):
         synced = await self.tree.sync()
         log.info("Synced %d slash commands", len(synced))
         await self._start_health()
+        ratelimit.install()
         self.restart_requested = False
         self._updater = asyncio.create_task(updater.loop(self))
         try:
@@ -186,6 +187,14 @@ def main():
         raise SystemExit(
             "Enable 'Message Content Intent' in the Developer Portal, "
             "or set MESSAGE_CONTENT=false in .env")
+    except (discord.LoginFailure, discord.ConnectionClosed) as exc:
+        if isinstance(exc, discord.ConnectionClosed) and exc.code != 4004:
+            raise
+        # 4004 = Discord no longer accepts this token (it was reset or leaked)
+        raise SystemExit(
+            "DISCORD_TOKEN is not valid anymore (it was reset in the Developer Portal or "
+            "revoked). Copy a new token from Developer Portal > Bot > Reset Token into .env, "
+            "then restart.")
     if getattr(bot, "restart_requested", False):
         # a new yt-dlp was installed: start again in this same process (works in Docker,
         # systemd and a plain terminal alike)

@@ -17,7 +17,7 @@ from typing import TYPE_CHECKING, Optional
 import discord
 
 import config
-from core import clock
+from core import clock, ratelimit
 from core.sources import Track, fmt_time, resolve_stream
 from core.audio import CountingSource, SmoothVolume
 from core.stream import HTTPStreamReader
@@ -135,6 +135,9 @@ def clock_after(seconds: float) -> str:
 
 TIME_MODES = ("length", "remaining", "clock")
 NO_PINGS = discord.AllowedMentions.none()
+EDIT_GAP_START = 5.0   # seconds between timer edits after the first 429
+EDIT_GAP_MAX = 20.0
+EDIT_GAP_DECAY = 120   # seconds without a 429 before edits speed up by 1 s
 STICKY_MIN_GAP = 20  # seconds: a busy chat must not make the panel jump down constantly  # the panel names people (status line), never pings
 
 
@@ -209,6 +212,9 @@ class GuildPlayer:
         self._card_at = 0.0
         self._blink = False
         self._card_check = True  # see _card_present
+        self._last_edit = 0.0    # timer edits pace themselves (see _pace)
+        self._edit_gap = 0.0
+        self._gap_since = 0.0
         self._panel_sig = None        # last panel edit, to skip edits that change nothing
         self.track_plays = 0          # plays of the current track in this server (hit badge)
         self.requester_birthday = False
@@ -1025,17 +1031,18 @@ class GuildPlayer:
     async def card_file(self, mode: str = "play", reason: str = "") -> Optional[discord.File]:
         """Render the current track's card (None when cards are off or rendering failed).
         The compact panel gets the slim mini card."""
-        if not config.MUSIC_CARD or not self.current:
+        track = self.current  # the song can end while the card is drawn: keep this one
+        if not config.MUSIC_CARD or not track:
             return None
         from core.card import alt_text, make_card, new_filename
         state = self.card_state(mode, reason)
         if self.compact and mode != "play":
             return None  # loading / error stay text on the compact panel
-        data = await make_card(self.current, state)
-        if not data:
-            return None
+        data = await make_card(track, state)
+        if not data or self.current is not track:
+            return None  # finished meanwhile: the next panel draws its own card
         return discord.File(io.BytesIO(data), filename=new_filename(),
-                            description=alt_text(self.current, state))
+                            description=alt_text(track, state))
 
     async def _card_file(self, tick: bool = False, mode: str = "play",
                          reason: str = "") -> Optional[discord.File]:
@@ -1246,8 +1253,11 @@ class GuildPlayer:
             await self._edit_panel()
 
     async def update_panel(self, tick: bool = False):
-        """Refresh the panel. tick=True (timer) skips if an edit is already running."""
+        """Refresh the panel. tick=True (timer) skips if an edit is already running, or
+        when Discord recently asked us to slow down (see _edit_gap)."""
         if not self.panel_message or (tick and self._panel_lock.locked()):
+            return
+        if tick and time.monotonic() - self._last_edit < self._edit_gap:
             return
         async with self._panel_lock:
             await self._edit_panel(tick)
@@ -1274,8 +1284,10 @@ class GuildPlayer:
                     if not self.panel_message:
                         return
                     try:
+                        started = time.monotonic()
                         msg = await self.panel_message.edit(embed=embed, view=view,
                                                             allowed_mentions=NO_PINGS, **kwargs)
+                        self._pace(started)
                     except Exception:
                         # the new card never arrived: keep pointing at the one that did
                         self.card_name, self._card_key, self._card_at = before
@@ -1313,6 +1325,21 @@ class GuildPlayer:
             log.debug("panel edit failed: %s", exc)
         except Exception:  # network trouble must not stop the panel timer
             log.warning("panel edit failed", exc_info=True)
+
+    def _pace(self, started: float):
+        """After an edit: if Discord rate-limited it, space timer edits further apart
+        (up to EDIT_GAP_MAX); after a quiet while, speed back up step by step."""
+        now = time.monotonic()
+        self._last_edit = now
+        mid = getattr(self.panel_message, "id", None)
+        if mid is not None and ratelimit.limited_since(mid, started):
+            self._edit_gap = min(max(self._edit_gap * 1.5, EDIT_GAP_START), EDIT_GAP_MAX)
+            self._gap_since = now
+            log.info("[%s] Discord is rate limiting the panel, edits now every %.0fs",
+                     self.guild.id, self._edit_gap)
+        elif self._edit_gap and now - self._gap_since > EDIT_GAP_DECAY:
+            self._edit_gap = max(self._edit_gap - 1, 0.0)
+            self._gap_since = now
 
     def _card_present(self, msg) -> bool:
         """Is the card the panel shows really on the message Discord sent back? A missing
