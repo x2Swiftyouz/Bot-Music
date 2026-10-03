@@ -1145,9 +1145,8 @@ def _lyrics_state(view, p: "GuildPlayer"):
 
 
 def _counts(view, p: "GuildPlayer"):
-    """Numbers on the buttons: songs waiting, and skip votes so far."""
-    if p.queue:
-        view.queue_btn.label = f"{len(p.queue)}" if len(p.queue) < 1000 else "999+"
+    """Skip votes so far on ⏭ (for a short while). The queue length is on the card, not
+    on 📜: the buttons stay icons only, an even 5 x 3 grid."""
     if p.skip_votes and p.current:
         view.skip.label = f"{len(p.skip_votes)}/{p.skip_need()}"
         view.skip.style = discord.ButtonStyle.primary
@@ -1175,7 +1174,7 @@ class PanelView(discord.ui.View):
         if hasattr(p, "stop_armed") and p.stop_armed():
             self.stop_btn.label = "กดอีกครั้งเพื่อหยุด"
         if p.volume <= 0:
-            self.mute_btn.emoji, self.mute_btn.label = "🔊", "เปิดเสียง"
+            self.mute_btn.emoji = "🔊"
             self.mute_btn.style = discord.ButtonStyle.primary
         _seek_state(self, p)
         self.add_btn.disabled = len(p.queue) >= config.MAX_QUEUE
@@ -1194,7 +1193,7 @@ class PanelView(discord.ui.View):
                 opt.label = f"ระดับเสียง: {current}% · {VOLUME_NAMES[current][0]}"
 
     # row 0: transport, row 1: queue and extras, row 2: add / mute / live lyrics,
-    # row 3: volume
+    # row 3: volume. Icons only: every button the same width, rows the same length.
     @discord.ui.button(emoji="⏮", style=discord.ButtonStyle.secondary, custom_id="mb:prev", row=0)
     async def prev(self, inter, _):
         await act_prev(inter)
@@ -1237,12 +1236,12 @@ class PanelView(discord.ui.View):
     async def lyrics_btn(self, inter, _):
         await act_lyrics(inter)
 
-    @discord.ui.button(emoji="➕", label="เพิ่มเพลง", style=discord.ButtonStyle.success,
+    @discord.ui.button(emoji="➕", style=discord.ButtonStyle.success,
                        custom_id="mb:add", row=2)
     async def add_btn(self, inter, _):
         await act_add(inter)
 
-    @discord.ui.button(emoji="🔇", label="ปิดเสียง", style=discord.ButtonStyle.secondary,
+    @discord.ui.button(emoji="🔇", style=discord.ButtonStyle.secondary,
                        custom_id="mb:mute", row=2)
     async def mute_btn(self, inter, _):
         await act_mute(inter)
@@ -1256,7 +1255,7 @@ class PanelView(discord.ui.View):
     async def autoplay_btn(self, inter, _):
         await act_autoplay(inter)
 
-    @discord.ui.button(emoji="🎙", label="เนื้อสด", style=discord.ButtonStyle.secondary,
+    @discord.ui.button(emoji="🎙", style=discord.ButtonStyle.secondary,
                        custom_id="mb:livelyrics", row=2)
     async def live_lyrics_btn(self, inter, _):
         await act_live_lyrics(inter)
@@ -1303,6 +1302,8 @@ class CompactPanelView(discord.ui.View):
         elif p.loading:
             self.pause.disabled = True
         _counts(self, p)
+        if p.queue:  # one row and a slim card without the queue chip: keep the number here
+            self.queue_btn.label = f"{len(p.queue)}" if len(p.queue) < 1000 else "999+"
 
     @discord.ui.button(emoji="⏮", style=discord.ButtonStyle.secondary, custom_id="mbc:prev")
     async def prev(self, inter, _):
