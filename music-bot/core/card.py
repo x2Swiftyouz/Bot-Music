@@ -387,6 +387,7 @@ class CardState:
     fx: str = ""                # its key (bass | nightcore | slowed | 8d): the card's look
     queue_low: bool = False     # last minute, nothing queued, no autoplay: ask for a song
     autoplay_next: str = ""     # autoplay will play this next ('หลอนตามสั่ง EP.563')
+    autoplay: bool = False      # autoplay is on: the empty 'up next' row says it will pick
 
 
 # -------------------------------------------------------------------- text
@@ -507,6 +508,7 @@ _VERSION = re.compile(
     r"nightcore|instrumental|piano|demo|studio|concert|orchestra(?:l)?|edit|mix|rework|"
     r"reprise|remaster(?:ed)?|band|karaoke|english|japanese|korean|chinese)\b|"
     r"แสดงสด|อะคูสติก|คอนเสิร์ต|เวอร์ชัน|เวอร์ชั่น|รีมิกซ์|คัฟเวอร์", re.I)
+SHOW_CHARS = 32    # a talk clip's segment name longer than this stays in the title
 LABEL_CHARS = 22    # a longer label name is cut on its chip
 VERSION_CHARS = 24  # longer bracketed text stays out of the chip
 
@@ -573,7 +575,8 @@ def is_talk(track: Optional[Track]) -> bool:
     title = track.title or ""
     if _MUSIC.search(title):
         return False
-    return bool(_TALK.search(title) or episode_number(title) is not None)
+    return bool(_TALK.search(title) or _HORROR.search(title)
+                or episode_number(title) is not None)
 
 
 def _pipe_parts(title: str, artist: str) -> tuple[str, str]:
@@ -626,12 +629,13 @@ def song_parts(track: Track) -> SongParts:
     title, version = _pull_versions(title)
     artist = clean_artist((track.artist or "").strip())
     title, series = _pipe_parts(title, artist)
-    parts = _song_parts(title, artist, feat, version)
-    parts.series = series
+    parts = _song_parts(title, artist, feat, version, talk=is_talk(track))
+    parts.series = series or parts.series
     return parts
 
 
-def _song_parts(title: str, artist: str, feat: str, version: str) -> SongParts:
+def _song_parts(title: str, artist: str, feat: str, version: str,
+                talk: bool = False) -> SongParts:
     # "แต่งงานกันนะ-Rapper Tery": a bare "-" counts too, but only when one side names
     # the artist (so "Spider-Man" stays whole)
     for sep in (" - ", " – ", " — ", "-", "–"):
@@ -656,6 +660,13 @@ def _song_parts(title: str, artist: str, feat: str, version: str) -> SongParts:
             # 'Song - Remastered 2011', 'Song - Live at Wembley': a version, not an artist
             return SongParts(_one_script(parts[0]), _artist_name(artist), feat,
                              version or parts[1])
+        if talk:
+            # a story or a show, not a song: 'กฎ 5 ข้อ... - Rules of horror' from the
+            # channel 'Shock Tonight' is the episode, then its segment. The channel
+            # stays on the artist line and the segment goes to the show chip.
+            show = parts[1] if len(parts[1]) <= SHOW_CHARS else ""
+            return SongParts(_one_script(parts[0]), _artist_name(artist), feat, version,
+                             series=show)
         song, who = parts if _has_thai(title) else parts[::-1]
         extra = [m.group(1).strip() for m in _BRACKETS.finditer(who)]
         who = re.sub(r"\s{2,}", " ", _BRACKETS.sub(" ", who)).strip(" -–—|") or who
@@ -1572,6 +1583,26 @@ def short_count(n: int) -> str:
     return str(n)
 
 
+def short_label(name: str, limit: int = LABEL_CHARS) -> str:
+    """A channel name for a small chip: words like 'Thailand' / 'Official' out, one script
+    when it mixes English and Thai ('Shock Tonight คำคืนแห่งความหลอน' -> 'Shock Tonight'),
+    and cut between words, never inside one."""
+    out = re.sub(r"(?i)\s+(?:thailand|official|channel|thai)\b", "", name).strip() or name
+    words = out.split()
+    if len(words) > 1 and any(_has_thai(w) for w in words) and any(w.isascii() for w in words):
+        lead = _has_thai(words[0])
+        run = []
+        for w in words:
+            if _has_thai(w) != lead:
+                break
+            run.append(w)
+        out = " ".join(run)
+    if len(out) <= limit:
+        return out
+    cut = out.rfind(" ", 0, limit)
+    return (out[:cut] if cut >= limit // 2 else out[:limit - 1]).rstrip(" -–|·,") + "…"
+
+
 def _info_chips(st: CardState, fill, text, track: Optional[Track] = None) -> list[tuple]:
     """Language, views and year: nice to know, so they are the first to go when space
     runs out."""
@@ -1579,8 +1610,7 @@ def _info_chips(st: CardState, fill, text, track: Optional[Track] = None) -> lis
     lang = song_language(f"{track.title} {track.artist or ''}") if track is not None else None
     label = song_parts(track).label if track is not None else ""
     if label:  # the record label that uploaded it ('RS Music Thailand' -> 'RS Music')
-        name = re.sub(r"(?i)\s+(?:thailand|official|channel|thai)\b", "", label).strip() or label
-        out.append(("disc", _short(name, LABEL_CHARS), fill, text, False))
+        out.append(("disc", short_label(label), fill, text, False))
     if lang:
         out.append((f"flag:{lang}", LANGUAGES[lang], fill, text, False))
     if st.views:
@@ -1920,16 +1950,18 @@ def _draw_up_next(canvas: Image.Image, g: Geo, title: str, thumb, accent, bg):
 
 
 def _draw_empty_queue(canvas: Image.Image, g: Geo, accent, bg, low: bool = False,
-                      upcoming: str = ""):
+                      upcoming: str = "", autoplay: str = ""):
     """Fills the 'up next' row when nothing is queued: how to add a song. In the song's
     last minute (low) it turns into an amber warning that the music is about to stop.
-    upcoming: what autoplay will play next (the show's next episode)."""
+    upcoming: what autoplay will play next (the show's next episode). autoplay: 'เพลง' or
+    'คลิป', what autoplay picks when no next episode is known."""
     d = _Draw(canvas)
     k = g.s
     fnt = font("Medium" if low else "Regular", round(18 * k))
     head = font("Medium", round(18 * k))
-    if upcoming:
-        a, b = "ถัดไป  ", f"Autoplay · ตอนต่อไป {upcoming}"
+    if upcoming or autoplay:
+        b = f"Autoplay · ตอนต่อไป {upcoming}" if upcoming else f"Autoplay จะเลือก{autoplay}ต่อให้"
+        a = "ถัดไป  "
         head_fill, fill = _mix(accent, bg, 0.35), _readable((215, 215, 228), bg, 4.0)
     elif low:
         a, b = "ใกล้หมดแล้ว  ", "เพลงจะหยุดในไม่ถึง 1 นาที · กด + เพิ่มเพลง"
@@ -2190,10 +2222,11 @@ def render(track: Track, art_bytes: Optional[bytes], st: CardState = CardState()
         if st.effect:
             chips.append(("fx", st.effect, soft, chip_text, False))
         talk = []  # after the badges: the show's episode chip says more than these
+        if track.duration and track.duration >= LONG_CHIP_SECONDS:  # time left, by minute
+            left = max(math.ceil((track.duration - st.position) / 60), 1)
+            talk.append(("clock", f"เหลือ {left} นาที", soft, chip_text, False))
         if is_talk(track):
             talk.append(("mic", "คลิปเล่าเรื่อง", soft, chip_text, False))
-        if track.duration and track.duration >= LONG_CHIP_SECONDS:
-            talk.append(("clock", f"{round(track.duration / 60)} นาที", soft, chip_text, False))
         if st.hot_part:
             chips.append(("hot", "ท่อนฮิต", (255, 122, 26, 215), WHITE, False))
         chapter_now = current_chapter(track, st.position)
@@ -2212,8 +2245,9 @@ def render(track: Track, art_bytes: Optional[bytes], st: CardState = CardState()
             more = tuple(_open_art(a) for a in arts[1:3])
             _draw_next(canvas, g, st.next_title, accent, bg, _open_art(arts[0] if arts else None),
                        more, max(st.queue_len - 1 - len(more), 0))
-        elif st.loop == "off" and st.autoplay_next:
-            _draw_empty_queue(canvas, g, accent, bg, upcoming=st.autoplay_next)
+        elif st.loop == "off" and (st.autoplay_next or st.autoplay):
+            _draw_empty_queue(canvas, g, accent, bg, upcoming=st.autoplay_next,
+                              autoplay="คลิป" if is_talk(track) else "เพลง")
         elif st.loop == "off":
             _draw_empty_queue(canvas, g, accent, bg, st.queue_low)
     elif _badges(st, track):  # share card keeps the badges

@@ -1349,6 +1349,7 @@ class GuildPlayer:
             night=is_night(), server_icon=self.server_icon_url(),
             listeners=self.listener_avatars(), listener_count=len(self.humans_in_channel()),
             queue_low=self.queue_low(), autoplay_next=self.upcoming_episode(),
+            autoplay=bool(self.autoplay and not self.queue),
             effect=EFFECTS[self.effect][0] if self.effect != "off" else "",
             fx=self.effect if self.effect != "off" else "")
 

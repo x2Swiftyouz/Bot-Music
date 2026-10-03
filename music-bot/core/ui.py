@@ -1,8 +1,10 @@
 """Embeds and interactive views (buttons, pagination, select menus)."""
 
 import io
-from collections import Counter
+import re
 import time
+import unicodedata
+from collections import Counter
 from typing import TYPE_CHECKING, Awaitable, Callable, Optional
 
 import discord
@@ -108,7 +110,6 @@ def _next_name(t: Track) -> str:
 
 
 def _no_emoji(text: str) -> str:
-    import unicodedata
     out = "".join(ch for ch in text if unicodedata.category(ch) not in ("So", "Sk", "Cs", "Co")
                   and ch not in "\ufe0e\ufe0f\u200d\u20e3")
     return " ".join(out.split()).replace(" · ·", " ·").strip(" ·")
@@ -180,45 +181,64 @@ def build_now_playing(p: "GuildPlayer", card: Optional[str] = None) -> discord.E
     return e
 
 
+STATUS_MAX = 64  # visible characters before the modes shrink to icons (one line on a phone)
+
+
 def status_line(p: "GuildPlayer") -> str:
-    """Small status strip under the panel: who just did what, then every mode that is on."""
-    parts = []
+    """Small status strip under the panel: who just did what, then every mode that is on.
+    When it would wrap, the modes shrink to their icons ('🎧 2 · 🎚 · 📻') and the note
+    keeps its words."""
+    head = []  # always in words: the note, paused / away
+    modes = []  # (words, icon form)
     if hasattr(p, "active_note") and (note := p.active_note()):
-        parts.append(note)
+        head.append(note)
     if getattr(p, "away_until", 0) and p.is_paused:
         if config.UI_STYLE == "groove":  # counts down by itself
             when = f"ออก <t:{int(p.away_until)}:R>"
         else:  # embed footers show timestamps as raw text
             when = f"ออกในอีก {max(int((p.away_until - clock.now()) // 60), 1)} นาที"
-        parts.append(f"💤 หยุดรอคนกลับเข้าห้อง · {when}")
+        head.append(f"💤 หยุดรอคนกลับเข้าห้อง · {when}")
     elif p.is_paused:
-        parts.append("⏸ หยุดอยู่")
+        head.append("⏸ หยุดอยู่")
     if p.loop_mode == "track":
-        parts.append("🔂 วนเพลงนี้")
+        modes.append(("🔂 วนเพลงนี้", "🔂"))
     elif p.loop_mode == "queue":
-        parts.append("🔁 วนทั้งคิว")
+        modes.append(("🔁 วนทั้งคิว", "🔁"))
     if p.compact:  # the full panel shows these on its buttons and volume menu already
         vol = int(round(p.volume * 100))
-        parts.append(f"{'🔇' if vol == 0 else '🔊'} {vol}%")
+        icon = "🔇" if vol == 0 else "🔊"
+        modes.append((f"{icon} {vol}%", f"{icon} {vol}%"))
         if p.live_lyrics:
-            parts.append("🎙 เนื้อสด")
+            modes.append(("🎙 เนื้อสด", "🎙"))
     if listeners := len(p.humans_in_channel()):
-        parts.append(f"🎧 {listeners} คนฟังอยู่")
+        modes.append((f"🎧 {listeners} คนฟังอยู่", f"🎧 {listeners}"))
     if p.normalize:
-        parts.append("🎚 ความดังเท่ากัน")
+        modes.append(("🎚 ความดังเท่ากัน", "🎚"))
     if getattr(p, "effect", "off") != "off":
         from core.player import EFFECTS
         name, emoji, *_ = EFFECTS[p.effect]
-        parts.append(f"{emoji} {name}")
+        modes.append((f"{emoji} {name}", f"{emoji} {name}"))
     if p.stay_247:
-        parts.append("🌙 24/7")
+        modes.append(("🌙 24/7", "🌙"))
     if getattr(p, "autoplay", False):  # its switch is inside ⚙️ now
-        parts.append("📻 Autoplay")
+        modes.append(("📻 Autoplay", "📻"))
     if getattr(p, "fair_queue", False) and p.queue:
-        parts.append("⚖️ ผลัดกันเล่น")
+        modes.append(("⚖️ ผลัดกันเล่น", "⚖️"))
     if p.skip_votes:
-        parts.append(f"🗳 โหวตข้าม {len(p.skip_votes)}/{p.skip_need()}")
-    return " · ".join(parts)
+        votes = f"🗳 {len(p.skip_votes)}/{p.skip_need()}"
+        modes.append((f"🗳 โหวตข้าม {len(p.skip_votes)}/{p.skip_need()}", votes))
+    full = " · ".join(head + [w for w, _ in modes])
+    if _visible_len(full) <= STATUS_MAX:
+        return full
+    return " · ".join(head + [i for _, i in modes])
+
+
+def _visible_len(text: str) -> int:
+    """Length as seen: a mention shows as a name, a timestamp as 'in 5 minutes', and
+    Thai marks take no room of their own."""
+    text = re.sub(r"<@!?\d+>", "@" + "x" * 14, text)
+    text = re.sub(r"<t:\d+:\w>", "in 5 minutes", text)
+    return sum(0 if unicodedata.category(c) == "Mn" else 1 for c in text)
 
 
 LYRICS_LEAD = 1.0  # seconds: the panel edit reaches people a little late

@@ -11,6 +11,7 @@ from discord.ext import commands
 
 import config
 from core.checks import UserError, control, get_player
+from core.card import display_title
 from core.player import EFFECTS, GuildPlayer
 from core.sources import (Track, fmt_time, parse_time, search_busy, search_choices,
                           search_tracks)
@@ -19,6 +20,17 @@ from core.ui import (LOOP_ICON, PART_PREFIX, LyricsView, QueueView, SearchView, 
                      apply_effect, build_added_embed, build_now_playing, wait_text, who_label)
 
 log = logging.getLogger("musicbot.music")
+
+NOTE_TITLE = 40  # a song's name in the status line note
+
+
+def _short_name(name: str, limit: int = NOTE_TITLE) -> str:
+    """Cut a long name between words ('กฎ 5 ข้อช่วยให้…'), never inside one."""
+    name = " ".join(name.split())
+    if len(name) <= limit:
+        return name
+    cut = name.rfind(" ", 0, limit)
+    return (name[:cut] if cut >= limit // 2 else name[:limit]).rstrip(" -–|·,") + "…"
 
 
 class Music(commands.Cog):
@@ -98,7 +110,7 @@ class Music(commands.Cog):
             raise UserError(f"คิวเต็ม (สูงสุด {config.MAX_QUEUE})")
         if player.fair_queue and not front:  # taking turns may place it earlier
             index = max(player.position_of(tracks[0]), 0)
-        what = tracks[0].name[:40] if added == 1 else f"{added} เพลง"
+        what = _short_name(display_title(tracks[0])) if added == 1 else f"{added} เพลง"
         player.note(f"➕ {who_label(member)} เพิ่ม {what}{wait_text(player, index)}")
         return build_added_embed(player, tracks[:added], index, label)
 
