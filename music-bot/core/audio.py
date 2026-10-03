@@ -46,6 +46,30 @@ def _scale(data: bytes, gain: float) -> bytes:
     return _scale_ramp(data, gain, gain)
 
 
+class Silence(discord.AudioSource):
+    """Placeholder left in a source whose audio was handed to the next song (crossfade)."""
+
+    def read(self) -> bytes:
+        return b""
+
+    def is_opus(self) -> bool:
+        return False
+
+
+def _mix(a: bytes, b: bytes) -> bytes:
+    """Add two s16le frames (clipped). The shorter one is padded with silence."""
+    if len(a) < len(b):
+        a += bytes(len(b) - len(a))
+    elif len(b) < len(a):
+        b += bytes(len(a) - len(b))
+    if audioop:
+        return audioop.add(a, b, 2)
+    x, y = array.array("h"), array.array("h")
+    x.frombytes(a)
+    y.frombytes(b)
+    return array.array("h", (max(-32768, min(32767, p + q)) for p, q in zip(x, y))).tobytes()
+
+
 class SmoothVolume(discord.AudioSource):
     """Drop-in replacement for PCMVolumeTransformer with fades."""
 
@@ -60,6 +84,40 @@ class SmoothVolume(discord.AudioSource):
         self._step = 0.0
         self._on_done: Optional[Callable[[], None]] = None
         self.frames = 0  # read counter for the watchdog
+        self._tail: Optional[list] = None  # [source, gain, step]: previous song fading out
+
+    def crossfade_from(self, tail: discord.AudioSource, tail_gain: float, ms: int):
+        """Start with the previous song's remaining audio mixed in, fading it out over
+        ms while this one fades in. Call before playback starts."""
+        frames = max(int(ms // FRAME_MS), 1)
+        with self._lock:
+            self._tail = [tail, tail_gain, tail_gain / frames]
+            self._gain = 0.0
+        self.fade_to(self._target, ms)
+
+    @property
+    def crossfading(self) -> bool:
+        return self._tail is not None
+
+    def _end_tail(self):
+        tail, self._tail = self._tail, None
+        if tail:
+            try:
+                tail[0].cleanup()
+            except Exception:
+                pass
+
+    def _mix_tail(self, data: bytes) -> bytes:
+        tail = self._tail
+        if not tail:
+            return data
+        source, gain, step = tail
+        old = source.read() if gain > 0 else b""
+        if not old:
+            self._end_tail()
+            return data
+        tail[1] = max(gain - step, 0.0)
+        return _mix(data, _scale(old, (gain + tail[1]) / 2))
 
     # PCMVolumeTransformer compatible API
     @property
@@ -86,6 +144,7 @@ class SmoothVolume(discord.AudioSource):
         return False
 
     def cleanup(self):
+        self._end_tail()
         self.original.cleanup()
 
     def read(self) -> bytes:
@@ -107,6 +166,8 @@ class SmoothVolume(discord.AudioSource):
             if not self._step and self._on_done:
                 callback, self._on_done = self._on_done, None
         out = _scale(data, end) if start == end else _scale_ramp(data, start, end)
+        if self._tail:
+            out = self._mix_tail(out)
         if callback:
             try:
                 callback()

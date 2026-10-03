@@ -96,6 +96,21 @@ def _only_tags(text: str) -> bool:
     return bool(words) and all(w in _TAG_WORDS for w in words)
 
 
+# "(feat. X)", "[ft. X]", "(with X)" anywhere, or "ft. X" / "feat. X" at the end.
+_FEAT_BRACKET = re.compile(r"\s*[(\[]\s*(?:feat\.?|ft\.?|featuring|with)\s+([^()\[\]]+?)\s*[)\]]",
+                           re.I)
+_FEAT_TAIL = re.compile(r"\s+(?:feat\.?|ft\.?|featuring)\s+((?:(?! - )[^()\[\]|])+?)\s*$", re.I)
+
+
+def split_feat(title: str) -> tuple[str, str]:
+    """'Song FT. A & B' -> ('Song', 'A & B'). No featured artists -> (title, '')."""
+    m = _FEAT_BRACKET.search(title) or _FEAT_TAIL.search(title)
+    if not m:
+        return title, ""
+    rest = (title[:m.start()] + title[m.end():]).strip()
+    return (rest or title), m.group(1).strip()
+
+
 def clean_title(title: str) -> str:
     """'Song (Official Music Video) [4K]' -> 'Song'. Keeps (Live), (Remix), (feat. X)..."""
     out = _BRACKETS.sub(lambda m: "" if _only_tags(m.group(1)) else m.group(0), title)

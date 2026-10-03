@@ -55,6 +55,7 @@ NORMALIZE_FILTER = os.getenv("NORMALIZE_FILTER", "loudnorm=I=-14:LRA=11:TP=-1.5"
 FADE_MS = _int("FADE_MS", 400)                   # fade on pause/skip/stop/seek
 
 # Playback stability
+CROSSFADE_SECONDS = max(_int("CROSSFADE_SECONDS", 4), 0)  # songs overlap this long (0 = off)
 PRELOAD_SECONDS = _int("PRELOAD_SECONDS", 12)    # gapless: start next FFmpeg this early
 WATCHDOG_SECONDS = _int("WATCHDOG_SECONDS", 15)  # restart audio stuck this long
 

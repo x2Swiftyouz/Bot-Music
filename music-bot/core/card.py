@@ -18,11 +18,11 @@ from dataclasses import dataclass
 from typing import Optional
 
 import aiohttp
-from PIL import (Image, ImageDraw, ImageEnhance, ImageFilter, ImageFont, ImageOps, ImageStat,
-                 features)
+from PIL import (Image, ImageChops, ImageDraw, ImageEnhance, ImageFilter, ImageFont, ImageOps,
+                 ImageStat, features)
 
 import config
-from core.sources import SOURCE_COLORS, Track, detect_source, fmt_time
+from core.sources import SOURCE_COLORS, Track, detect_source, fmt_time, split_feat
 
 log = logging.getLogger("musicbot.card")
 
@@ -189,14 +189,29 @@ def _fit_title(draw, text: str, size: int, max_w: float, lines: int = 2, size2: 
     return fnt, wrapped
 
 
-def display_title(track: Track) -> str:
-    """'Artist - Song' becomes 'Song' when the artist line already shows the artist."""
+def _title_parts(track: Track) -> tuple[str, str, str]:
+    """(song, artists, featured) for the card: 'HK & GH - Lost or Love FT. A & B' with
+    channel 'HK' -> ('Lost or Love', 'HK & GH', 'A & B')."""
+    title, feat = split_feat(track.name)
     artist = (track.artist or "").strip()
-    title = track.name
     for sep in (" - ", " – ", " — "):
-        if artist and title.lower().startswith(artist.lower() + sep):
-            return title[len(artist) + len(sep):].strip() or title
-    return title
+        left, found, right = title.partition(sep)
+        if found and right.strip() and artist and (
+                left.lower().startswith(artist.lower()) or artist.lower() in left.lower()):
+            left, left_feat = split_feat(left.strip())
+            return right.strip(), left, feat or left_feat
+    return title, artist, feat
+
+
+def display_title(track: Track) -> str:
+    """The song name alone: the artist line shows who made it (see display_artist)."""
+    return _title_parts(track)[0]
+
+
+def display_artist(track: Track) -> str:
+    """'HK & GH · ft. Forus & FREEFA'."""
+    _, artist, feat = _title_parts(track)
+    return " · ".join(x for x in (artist, f"ft. {feat}" if feat else "") if x)
 
 
 def alt_text(track: Track, st: CardState) -> str:
@@ -600,7 +615,8 @@ def _render_base(track: Track, art_bytes: Optional[bytes], g: Geo, theme: str,
     if g is MINI:
         fnt = font("Bold", g.title_size)
         d.text((g.x0, g.title_y), _fit(d, display_title(track), fnt, g.max_w), font=fnt, fill=WHITE)
-        sub = " · ".join(x for x in (track.artist, f"ขอโดย {track.requester_name or '-'}") if x)
+        sub = " · ".join(x for x in (display_artist(track), f"ขอโดย {track.requester_name or '-'}")
+                         if x)
         small = font("Regular", 15)
         d.text((g.x0, g.title_y + 32), _fit(d, sub, small, g.max_w), font=small,
                fill=_readable((200, 200, 212), bg))
@@ -621,9 +637,9 @@ def _render_base(track: Track, art_bytes: Optional[bytes], g: Geo, theme: str,
         if g.title_size2:  # wide: artist and requester share one line
             y += 4
             x = g.x0
-            if track.artist:
+            if display_artist(track):
                 fnt = font("Medium", 30)
-                artist = _fit(d, track.artist, fnt, g.max_w * 0.6)
+                artist = _fit(d, display_artist(track), fnt, g.max_w * 0.6)
                 d.text((x, y), artist, font=fnt, fill=_readable((225, 225, 235), bg))
                 x += d.textlength(artist, font=fnt)
                 dot = "  ·  "
@@ -634,9 +650,9 @@ def _render_base(track: Track, art_bytes: Optional[bytes], g: Geo, theme: str,
                  g.x0 + g.max_w - x)
             base = Base(canvas, accent, accent2, bg, y + 40)
         else:
-            if track.artist:
+            if display_artist(track):
                 fnt = font("Medium", 23)
-                _text(d, g, y + 2, _fit(d, track.artist, fnt, g.max_w), fnt,
+                _text(d, g, y + 2, _fit(d, display_artist(track), fnt, g.max_w), fnt,
                       _readable((225, 225, 235), bg))
                 y += 32
             fnt = font("Regular", 19)
@@ -902,12 +918,58 @@ def _eq(canvas: Image.Image, spot, heights):
         d.rounded_rectangle((bx, cy + full / 2 - bh, bx + bw, cy + full / 2), max(k, 1), fill=color)
 
 
-def _encode_eq(canvas: Image.Image, spot) -> bytes:
-    """Animated WebP: only the equalizer changes between frames, so it stays small."""
+GLOW_THEMES = ("blur", "solid", "minimal")  # plain square covers (neon has its own glow)
+GLOW_PAD = 40
+_glow_cache: "OrderedDict[tuple, Image.Image]" = OrderedDict()
+
+
+def _glow_layer(g: Geo, color) -> Image.Image:
+    """Soft light around the cover, in the cover's colour. Transparent over the cover
+    itself, so the cover stays sharp. Placed at (art_x - GLOW_PAD, art_y - GLOW_PAD)."""
+    key = (g.art, tuple(color))
+    if key in _glow_cache:
+        return _glow_cache[key]
+    size = g.art + 2 * GLOW_PAD
+    layer = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+    ImageDraw.Draw(layer).rounded_rectangle(
+        (GLOW_PAD - 16, GLOW_PAD - 16, size - GLOW_PAD + 16, size - GLOW_PAD + 16), 38,
+        outline=(*_mix(color, WHITE, 0.55), 255), width=16)  # width grows inwards
+    layer = layer.filter(ImageFilter.GaussianBlur(12))
+    hole = Image.new("L", layer.size, 255)
+    ImageDraw.Draw(hole).rounded_rectangle(
+        (GLOW_PAD, GLOW_PAD, size - GLOW_PAD, size - GLOW_PAD), 24, fill=0)
+    alpha = ImageChops.multiply(layer.getchannel("A"), hole)
+    layer.putalpha(alpha)
+    _glow_cache[key] = layer
+    while len(_glow_cache) > 16:
+        _glow_cache.popitem(last=False)
+    return layer
+
+
+def _add_glow(canvas: Image.Image, glow, strength: float):
+    layer, at = glow
+    if strength < 1:
+        layer = layer.copy()
+        layer.putalpha(layer.getchannel("A").point(lambda v: int(v * strength)))
+    canvas.alpha_composite(layer, at)
+
+
+def _glow_strength(frame: Optional[int] = None) -> float:
+    """Two soft pulses per equalizer loop (frame None = a still card)."""
+    if frame is None:
+        return 0.6
+    return 0.2 + 0.8 * (0.5 + 0.5 * math.sin(4 * math.pi * frame / EQ_FRAMES))
+
+
+def _encode_eq(canvas: Image.Image, spot, glow=None) -> bytes:
+    """Animated WebP: the equalizer (and the cover glow) change between frames."""
     frames = []
     for i in range(EQ_FRAMES):
         frame = canvas.copy()
-        _eq(frame, spot, _eq_frame(i))
+        heights = _eq_frame(i)
+        if glow:
+            _add_glow(frame, glow, _glow_strength(i))
+        _eq(frame, spot, heights)
         frames.append(frame.convert("RGB"))
     out = io.BytesIO()
     frames[0].save(out, "WEBP", save_all=True, append_images=frames[1:], duration=EQ_FRAME_MS,
@@ -1126,9 +1188,14 @@ def render(track: Track, art_bytes: Optional[bytes], st: CardState = CardState()
         ratio = min(max(st.position / track.duration, 0), 1)
         _draw_wave(canvas, g, track, ratio, accent, accent2, bg, glow)
         _draw_times(canvas, g, fmt_time(st.position), _right_time(track, st), middle=chapter)
-    if eq_spot and st.animate:
-        if ANIMATED:
-            return _encode_eq(canvas, eq_spot)
+    glow = None
+    if eq_spot and theme in GLOW_THEMES and g is WIDE:
+        glow = (_glow_layer(g, accent), (g.art_x - GLOW_PAD, g.art_y - GLOW_PAD))
+    if eq_spot and st.animate and ANIMATED:
+        return _encode_eq(canvas, eq_spot, glow)
+    if glow:
+        _add_glow(canvas, glow, _glow_strength())
+    if eq_spot and st.animate:  # no animation support: still bars
         _eq(canvas, eq_spot, EQ_STILL)
     return _encode(canvas)
 
@@ -1208,8 +1275,8 @@ def render_quote(lines: list[str], track: Track, art_bytes: Optional[bytes]) -> 
     title_f, artist_f = font("Bold", 32), font("Regular", 24)
     d.text((tx, fy + 14), _fit(d, display_title(track), title_f, w - tx - 100), font=title_f,
            fill=WHITE)
-    if track.artist:
-        d.text((tx, fy + 60), _fit(d, track.artist, artist_f, w - tx - 100), font=artist_f,
+    if display_artist(track):
+        d.text((tx, fy + 60), _fit(d, display_artist(track), artist_f, w - tx - 100), font=artist_f,
                fill=_readable((200, 200, 212), bg))
     d.line((100, fy - 28, w - 100, fy - 28), fill=(*_mix(accent, bg, 0.5), ), width=2)
     return _encode(canvas)

@@ -19,7 +19,7 @@ import discord
 import config
 from core import clock, ratelimit
 from core.sources import Track, fmt_time, resolve_stream
-from core.audio import CountingSource, SmoothVolume
+from core.audio import CountingSource, Silence, SmoothVolume
 from core.stream import HTTPStreamReader
 
 if TYPE_CHECKING:
@@ -212,6 +212,7 @@ class GuildPlayer:
         self._card_at = 0.0
         self._blink = False
         self._card_check = True  # see _card_present
+        self._tail = None        # (pcm source, gain, http reader): crossfade hand-over
         self._last_edit = 0.0    # timer edits pace themselves (see _pace)
         self._edit_gap = 0.0
         self._gap_since = 0.0
@@ -518,6 +519,25 @@ class GuildPlayer:
         self.queue = deque(picked + [t for t in self.queue if id(t) not in ids])
         return len(picked)
 
+    def move_by(self, tracks: list[Track], step: int) -> int:
+        """Move the selected tracks one place up (step -1) or down (+1). Selected tracks
+        next to each other move together. Returns how many moved."""
+        ids = {id(t) for t in tracks}
+        q = list(self.queue)
+        if not any(id(t) in ids for t in q):
+            return 0
+        order = range(len(q)) if step < 0 else range(len(q) - 1, -1, -1)
+        moves = []
+        for i in order:
+            j = i + step
+            if id(q[i]) in ids and 0 <= j < len(q) and id(q[j]) not in ids:
+                moves.append((i, j))
+                q[i], q[j] = q[j], q[i]
+        if moves:
+            self.push_undo("move")
+            self.queue = deque(q)
+        return len(moves)
+
     def dedupe(self) -> int:
         """Remove repeated songs (and the one playing now) from the queue."""
         seen = {self.current.url} if self.current else set()
@@ -678,9 +698,10 @@ class GuildPlayer:
 
     @staticmethod
     def close_source(source: discord.AudioSource):
-        reader = getattr(source, "_mb_reader", None)
-        if reader:
-            reader.close()
+        for attr in ("_mb_reader", "_mb_tail_reader"):
+            reader = getattr(source, attr, None)
+            if reader:
+                reader.close()
 
     # --------------------------------------------------------------- loop
     async def _player_loop(self):
@@ -702,6 +723,9 @@ class GuildPlayer:
         if not self.queue and not self._hold and self.autoplay and await self._autoplay_next():
             pass  # a similar song was queued: play it below
         if not self.queue or self._hold:
+            if self._tail:  # the next song was removed during the hand-over
+                self._drop_tail(self._tail)
+                self._tail = None
             self.current = None
             self.loading = False
             await self._set_status(None)
@@ -762,11 +786,15 @@ class GuildPlayer:
 
         source = self._take_preload(track, start)
         if source is None:
+            if self._tail:
+                self._drop_tail(self._tail)
+                self._tail = None
             try:
                 source = self.make_source(track, start)
             except Exception as exc:
                 await self._play_failed(track, exc)
                 return
+        self._attach_tail(source)
 
         def after(err: Optional[Exception], _source=source):
             if err:
@@ -902,9 +930,63 @@ class GuildPlayer:
                 else:
                     self.close_source(src)
                     src.cleanup()
+                    return
+                if self._can_crossfade():
+                    await self._crossfade_when_due(track)
                 return
         except asyncio.CancelledError:
             pass
+
+    # -------------------------------------------------------- crossfade
+    def _can_crossfade(self) -> bool:
+        """Crossfade mixes PCM, so it needs libopus (PCM path) and a SmoothVolume."""
+        return bool(config.CROSSFADE_SECONDS and OPUS_LOADED)
+
+    async def _crossfade_when_due(self, track: Track):
+        """Wait until CROSSFADE_SECONDS before the end, then hand over (see _hand_over)."""
+        while self.current is track and not self.destroyed and self._preload:
+            left = (track.duration or 0) - self.position
+            if left <= config.CROSSFADE_SECONDS:
+                if (not self.is_paused and self.loop_mode != "track"
+                        and self.queue and self._preload[0] is self.queue[0]):
+                    self._hand_over()
+                return
+            await asyncio.sleep(min(max(left - config.CROSSFADE_SECONDS, 0.05), 1.0))
+
+    def _hand_over(self):
+        """End this song early, but keep its audio: the next song's source plays the rest
+        of it, fading out, while the next song fades in."""
+        vc, src = self.vc, self._smooth_source()
+        if not vc or not src or not vc.is_playing():
+            return
+        reader = getattr(src, "_mb_reader", None)
+        self._tail = (src.original, src.volume, reader)
+        src.original = Silence()   # stopping the old source must not kill its FFmpeg...
+        src._mb_reader = None      # ...or close the stream feeding it
+        log.info("[%s] Crossfade: %ss", self.guild.id, config.CROSSFADE_SECONDS)
+        vc.stop()
+
+    def _attach_tail(self, source) -> None:
+        """Give the waiting crossfade tail to the next song's source, or drop it."""
+        tail, self._tail = self._tail, None
+        if not tail:
+            return
+        pcm, gain, reader = tail
+        if isinstance(source, SmoothVolume) and not source.crossfading:
+            source.crossfade_from(pcm, gain, config.CROSSFADE_SECONDS * 1000)
+            source._mb_tail_reader = reader
+            return
+        self._drop_tail(tail)
+
+    @staticmethod
+    def _drop_tail(tail):
+        pcm, _, reader = tail
+        try:
+            pcm.cleanup()
+        except Exception:
+            pass
+        if reader:
+            reader.close()
 
     # --------------------------------------------------------- watchdog
     async def _watchdog_loop(self):
@@ -1394,6 +1476,9 @@ class GuildPlayer:
         self.destroyed = True
         me = asyncio.current_task()
         self._drop_preload()
+        if self._tail:
+            self._drop_tail(self._tail)
+            self._tail = None
         for task in (self._panel_task, self._save_task, self._watchdog_task,
                      self._preload_task):
             if task and task is not me and not task.done():

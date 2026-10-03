@@ -10,7 +10,7 @@ import config
 from core import clock
 from core.checks import UserError, control
 from core.lyrics import Lyrics
-from core.sources import SOURCE_COLORS, Track, detect_source, fmt_time
+from core.sources import SOURCE_COLORS, Track, detect_source, fmt_time, split_feat
 
 if TYPE_CHECKING:
     from core.player import GuildPlayer
@@ -77,7 +77,7 @@ def _time_line(p: "GuildPlayer") -> str:
 
 
 def _link(t: Track) -> str:
-    name = _plain(t.name, 80)
+    name = _plain(split_feat(t.name)[0], 80)  # featured artists are on the card
     return f"**[{name}]({t.url})**" if t.url.startswith("http") else f"**{name}**"
 
 
@@ -447,6 +447,11 @@ class QueueView(PagesView):
         n = len(self.selected)
         self.jump_btn.disabled = n != 1
         self.top_btn.disabled = self.remove_btn.disabled = n == 0
+        q = self.p.queue
+        first = q[0] if q else None
+        last = q[-1] if q else None
+        self.up_btn.disabled = n == 0 or all(t is first for t in self.selected)
+        self.down_btn.disabled = n == 0 or all(t is last for t in self.selected)
         self.remove_btn.label = f"ลบ {n}" if n > 1 else None
         self.search_btn.label = "ล้างการค้นหา" if self.query else "ค้นหา"
         self.search_btn.emoji = "✖️" if self.query else "🔍"
@@ -518,6 +523,40 @@ class QueueView(PagesView):
             text = f"🗑 ลบ **{mine[0].name}**" if len(mine) == 1 else f"🗑 ลบ {len(mine)} เพลง"
             return text + (f" (ข้าม {skipped} เพลงของคนอื่น)" if skipped else "")
         await self._apply(inter, "remove", run)
+
+    async def _nudge(self, inter: discord.Interaction, step: int):
+        """⬆ / ⬇: move the selection one place and keep it selected, so pressing again
+        keeps moving it. The page follows the song."""
+        try:
+            p = control(inter)
+            if p is not self.p:
+                raise UserError("คิวนี้หมดอายุแล้ว เปิด `/queue` ใหม่")
+            alive = self._alive(p)
+            if not p.move_by(alive, step):
+                raise UserError("เลื่อนต่อไม่ได้แล้ว")
+        except UserError as exc:
+            return await inter.response.send_message(str(exc), ephemeral=True)
+        self.selected = alive
+        if not self.query:  # show the page the (first) song is on now
+            pos = next(i for i, t in enumerate(p.queue) if t is alive[0])
+            self.index = pos // self.PER_PAGE
+        self.pages = build_queue_pages(p, self.PER_PAGE, self.query)
+        self.index = min(self.index, len(self.pages) - 1)
+        self._sync()
+        where = next(i for i, t in enumerate(p.queue, 1) if t is alive[0])
+        text = (f"{'⬆️' if step < 0 else '⬇️'} **{alive[0].name}** อยู่ลำดับที่ {where}"
+                if len(alive) == 1 else f"{'⬆️' if step < 0 else '⬇️'} เลื่อน {len(alive)} เพลง")
+        await inter.response.edit_message(content=text, embed=self.pages[self.index], view=self)
+        await audit_inter(inter, "move up" if step < 0 else "move down", text[:150])
+        await p.update_panel()
+
+    @discord.ui.button(emoji="🔼", label="เลื่อนขึ้น", style=discord.ButtonStyle.secondary, row=3)
+    async def up_btn(self, inter: discord.Interaction, _):
+        await self._nudge(inter, -1)
+
+    @discord.ui.button(emoji="🔽", label="เลื่อนลง", style=discord.ButtonStyle.secondary, row=3)
+    async def down_btn(self, inter: discord.Interaction, _):
+        await self._nudge(inter, 1)
 
     @discord.ui.button(emoji="🔍", label="ค้นหา", style=discord.ButtonStyle.secondary, row=2)
     async def search_btn(self, inter: discord.Interaction, _):
