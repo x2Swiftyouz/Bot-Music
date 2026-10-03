@@ -99,8 +99,7 @@ def build_now_playing(p: "GuildPlayer", card: Optional[str] = None) -> discord.E
         e.description = f"{_link(t)} · {_countdown(p)}"
         if p.compact and p.queue:  # the mini card has no "up next" row
             e.description += f"\n-# ถัดไป: {_plain(p.queue[0].name[:60])}"
-        on_card = hasattr(p, "lyrics_on_card") and p.lyrics_on_card()
-        if not on_card and (karaoke := live_lyrics_text(p)):
+        if karaoke := live_lyrics_text(p):
             if p.compact:
                 e.description += "\n" + karaoke
             else:

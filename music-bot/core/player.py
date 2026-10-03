@@ -1113,7 +1113,6 @@ class GuildPlayer:
     def card_state(self, mode: str = "play", reason: str = ""):
         from core.card import CardState
         t = self.current
-        lyric_now, lyric_next = self.card_lyrics()
         end_clock = ""
         if self.time_format == 2 and t and t.duration:
             end_clock = clock_after(t.duration - self.position)
@@ -1125,7 +1124,6 @@ class GuildPlayer:
             next_title=nxt.name if nxt else "", next_thumb=(nxt.thumbnail or "") if nxt else "",
             more_thumbs=tuple(q.thumbnail or "" for q in list(self.queue)[1:3]),
             hot_part=self.in_hot_part(), ending=self.in_ending(),
-            lyric_now=lyric_now, lyric_next=lyric_next,
             hot=self.track_plays, birthday=self.requester_birthday, blink=self._blink,
             theme=self.card_theme, layout="mini" if self.compact else self.card_layout,
             mode=mode, reason=reason, avatar=self.avatar_url(t),
@@ -1137,22 +1135,6 @@ class GuildPlayer:
         t = self.current
         return bool(t and t.duration and self.queue and self.loop_mode != "track"
                     and t.duration - self.position <= ENDING_SECONDS)
-
-    def lyrics_on_card(self) -> bool:
-        """Live lyrics go on the card (big panel with a card), not in the text."""
-        return bool(config.LYRICS_ON_CARD and self.live_lyrics and self.has_card
-                    and not self.compact and self.lyrics and self.lyrics.synced
-                    and self.current and self.lyrics_url == self.current.url)
-
-    def card_lyrics(self) -> tuple[str, str]:
-        if not self.lyrics_on_card():
-            return "", ""
-        from core.ui import LYRICS_LEAD
-        lines = self.lyrics.synced
-        i = self.lyrics.line_at(self.position + LYRICS_LEAD)
-        now = (lines[i][1] or "♪") if i >= 0 else "♪"
-        nxt = (lines[i + 1][1] or "♪") if i + 1 < len(lines) else ""
-        return now, nxt
 
     def in_hot_part(self) -> bool:
         """Is the song at its most replayed part (YouTube heatmap, top 15%)?"""
@@ -1177,8 +1159,6 @@ class GuildPlayer:
         """Moving equalizer: always, never, or (default) only on a song's first card, so
         Discord's "GIF" label does not stay on the panel."""
         if mode != "play" or self.is_paused or config.CARD_ANIMATION == "off":
-            return False
-        if self.lyrics_on_card():  # a new card for every line: still images are enough
             return False
         if config.CARD_ANIMATION == "always":
             return True

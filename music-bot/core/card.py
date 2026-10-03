@@ -126,8 +126,6 @@ class CardState:
     more_thumbs: tuple = ()     # covers of the 2nd and 3rd songs in the queue
     hot_part: bool = False      # playing the most replayed part of the song right now
     ending: bool = False        # last seconds of the song: show what comes next, big
-    lyric_now: str = ""         # live lyrics on the card: the line being sung...
-    lyric_next: str = ""        # ...and the one after it
     hot: int = 0
     birthday: bool = False
     blink: bool = True
@@ -560,7 +558,6 @@ class Base:
     accent2: tuple
     bg: tuple
     text_bottom: int
-    marquee: Optional[tuple] = None  # (title strip image, x, y): a long title that scrolls
 
 
 _base_cache: "OrderedDict[tuple, Base]" = OrderedDict()
@@ -602,13 +599,10 @@ def _who(canvas: Image.Image, d: ImageDraw.ImageDraw, x: float, y: float, text: 
 
 
 def _render_base(track: Track, art_bytes: Optional[bytes], g: Geo, theme: str,
-                 avatar_bytes: Optional[bytes] = None, night: bool = False,
-                 marquee: bool = False) -> Base:
-    """Static part (background, cover, title, artist, requester). Cached per track.
-    marquee: a title too long for one line is left out and returned as a strip that the
-    animated card scrolls (instead of two smaller lines)."""
+                 avatar_bytes: Optional[bytes] = None, night: bool = False) -> Base:
+    """Static part (background, cover, title, artist, requester). Cached per track."""
     key = (track.url, track.title, track.artist, track.requester_name,
-           len(art_bytes or b""), len(avatar_bytes or b""), g, theme, night, marquee)
+           len(art_bytes or b""), len(avatar_bytes or b""), g, theme, night)
     if key in _base_cache:
         _base_cache.move_to_end(key)
         return _base_cache[key]
@@ -645,26 +639,16 @@ def _render_base(track: Track, art_bytes: Optional[bytes], g: Geo, theme: str,
                fill=_readable((200, 200, 212), bg))
         base = Base(canvas, accent, accent2, bg, g.h)
     else:
-        title = display_title(track)
-        strip = None
-        if marquee and g.title_size2 and theme != "neon":
-            fnt = font("Bold", g.title_size)
-            if d.textlength(title, font=fnt) > g.max_w:  # too long for one line: scroll it
-                strip = _title_strip(title, fnt)
-        if strip is not None:
-            lh = int(g.title_size * 1.3)
-            y = g.title_y + lh
-        else:
-            title_font, lines = _fit_title(d, title, g.title_size, g.max_w,
-                                           size2=g.title_size2)
-            lh = int(title_font.size * 1.3)
-            y = g.title_y
-            for line in lines:
-                if theme == "neon":
-                    _glow_text(canvas, g, y, line, title_font, a1)
-                    d = ImageDraw.Draw(canvas)
-                _text(d, g, y, line, title_font, WHITE)
-                y += lh
+        title_font, lines = _fit_title(d, display_title(track), g.title_size, g.max_w,
+                                       size2=g.title_size2)
+        lh = int(title_font.size * 1.3)
+        y = g.title_y
+        for line in lines:
+            if theme == "neon":
+                _glow_text(canvas, g, y, line, title_font, a1)
+                d = ImageDraw.Draw(canvas)
+            _text(d, g, y, line, title_font, WHITE)
+            y += lh
         who = f"ขอโดย {track.requester_name or '-'}"
         grey = _readable((185, 185, 198), bg)
         if g.title_size2:  # wide: artist and requester share one line
@@ -681,8 +665,7 @@ def _render_base(track: Track, art_bytes: Optional[bytes], g: Geo, theme: str,
             fnt = font("Regular", 25)
             _who(canvas, d, x, y + 4, who, fnt, grey, _avatar(avatar_bytes, 30),
                  g.x0 + g.max_w - x)
-            base = Base(canvas, accent, accent2, bg, y + 40,
-                        (strip, g.x0, g.title_y) if strip is not None else None)
+            base = Base(canvas, accent, accent2, bg, y + 40)
         else:
             if display_artist(track):
                 fnt = font("Medium", 23)
@@ -970,58 +953,12 @@ def _eq(canvas: Image.Image, spot, heights):
         d.rounded_rectangle((bx, cy + full / 2 - bh, bx + bw, cy + full / 2), max(k, 1), fill=color)
 
 
-MARQUEE_HOLD = 4     # frames the long title rests at each end
-MARQUEE_MOVE = 8     # frames it takes to scroll across (ping-pong: there and back)
-# 2 * (HOLD + MOVE) = 24 frames: a multiple of EQ_FRAMES, so the bars loop seamlessly
-MARQUEE_FADE = 28    # px soft edge where the title runs out of the box
-
-
-def _title_strip(title: str, fnt) -> Image.Image:
-    """A long title drawn once on a transparent strip; frames show a window of it."""
-    probe = ImageDraw.Draw(Image.new("RGBA", (1, 1)))
-    width = int(probe.textlength(title, font=fnt)) + 4
-    strip = Image.new("RGBA", (width, int(fnt.size * 1.35)), (0, 0, 0, 0))
-    ImageDraw.Draw(strip).text((0, 0), title, font=fnt, fill=WHITE)
-    return strip
-
-
-def _marquee_offsets(travel: int) -> list[int]:
-    """Pixel offset of the title per frame: rest, scroll to the end, rest, scroll back."""
-    ease = [0.5 - 0.5 * math.cos(math.pi * i / MARQUEE_MOVE) for i in range(1, MARQUEE_MOVE + 1)]
-    there = [round(travel * e) for e in ease]
-    return [0] * MARQUEE_HOLD + there + [travel] * MARQUEE_HOLD + [travel - x for x in there]
-
-
-def _draw_marquee(frame: Image.Image, g: Geo, marquee, offset: int, travel: int):
-    strip, x, y = marquee
-    window = strip.crop((offset, 0, offset + g.max_w, strip.height))
-    alpha = window.getchannel("A")
-    ramp = Image.new("L", (MARQUEE_FADE, 1))
-    ramp.putdata([int(255 * i / (MARQUEE_FADE - 1)) for i in range(MARQUEE_FADE)])
-    ramp = ramp.resize((MARQUEE_FADE, strip.height))  # 0 at the left .. 255 at the right
-    right = g.max_w - MARQUEE_FADE
-    if offset < travel:  # more text to the right: fade out towards the edge
-        alpha.paste(ImageChops.multiply(alpha.crop((right, 0, g.max_w, strip.height)),
-                                        ramp.transpose(Image.FLIP_LEFT_RIGHT)), (right, 0))
-    if offset > 0:  # text scrolled away on the left: fade in from the edge
-        alpha.paste(ImageChops.multiply(alpha.crop((0, 0, MARQUEE_FADE, strip.height)), ramp),
-                    (0, 0))
-    window.putalpha(alpha)
-    frame.alpha_composite(window, (x, y))
-
-
-def _encode_eq(canvas: Image.Image, spot, marquee=None, g: Optional[Geo] = None) -> bytes:
-    """Animated WebP: the equalizer moves (and a long title scrolls)."""
+def _encode_eq(canvas: Image.Image, spot) -> bytes:
+    """Animated WebP: only the equalizer changes between frames, so it stays small."""
     frames = []
-    offsets, travel = [0] * EQ_FRAMES, 0
-    if marquee is not None and g is not None:
-        travel = max(marquee[0].width - g.max_w, 0)
-        offsets = _marquee_offsets(travel)
-    for i, offset in enumerate(offsets):
+    for i in range(EQ_FRAMES):
         frame = canvas.copy()
-        if marquee is not None and g is not None:
-            _draw_marquee(frame, g, marquee, offset, travel)
-        _eq(frame, spot, _eq_frame(i % EQ_FRAMES))
+        _eq(frame, spot, _eq_frame(i))
         frames.append(frame.convert("RGB"))
     out = io.BytesIO()
     frames[0].save(out, "WEBP", save_all=True, append_images=frames[1:], duration=EQ_FRAME_MS,
@@ -1098,17 +1035,6 @@ def _draw_up_next(canvas: Image.Image, g: Geo, title: str, thumb, accent, bg):
     tx = x + size + 16 * k
     d.text((tx, top + 4 * k), "ต่อไป · UP NEXT", font=head, fill=accent)
     d.text((tx, top + 26 * k), name, font=body, fill=WHITE)
-
-
-def _draw_lyrics(canvas: Image.Image, g: Geo, now: str, nxt: str, accent, bg):
-    """Live lyrics on the card: the line being sung, big, and the next one, dim."""
-    k = g.s
-    d = ImageDraw.Draw(canvas)
-    big, small = font("Bold", round(22 * k)), font("Regular", round(16 * k))
-    _text(d, g, g.chips_y - 2 * k, _fit(d, now or "♪", big, g.max_w), big, WHITE)
-    if nxt:
-        _text(d, g, g.chips_y + 36 * k, _fit(d, nxt, small, g.max_w), small,
-              _readable((170, 170, 185), bg))
 
 
 def _draw_empty_queue(canvas: Image.Image, g: Geo, accent, bg):
@@ -1238,10 +1164,7 @@ def render(track: Track, art_bytes: Optional[bytes], st: CardState = CardState()
            icon: Optional[bytes] = None) -> bytes:
     g = GEOS.get(st.layout, WIDE)
     theme = st.theme if st.theme in THEMES else "blur"
-    marquee = bool(config.CARD_MARQUEE and st.animate and ANIMATED and g is WIDE
-                   and st.mode == "play" and not st.paused)
-    base = _render_base(track, art_bytes, g, theme, None if g is MINI else avatar, st.night,
-                        marquee)
+    base = _render_base(track, art_bytes, g, theme, None if g is MINI else avatar, st.night)
     if g is MINI:
         return _render_mini(track, base, st)
     g = _flow(g, base.text_bottom)
@@ -1282,9 +1205,7 @@ def render(track: Track, art_bytes: Optional[bytes], st: CardState = CardState()
     soft, chip_text = _chip_colors(accent)
     if st.mode == "play" and st.hot_part:  # the most replayed part: warmer, brighter
         canvas.alpha_composite(Image.new("RGBA", canvas.size, HOT_TINT))
-    if st.mode == "play" and (st.lyric_now or st.lyric_next):
-        _draw_lyrics(canvas, g, st.lyric_now, st.lyric_next, accent, bg)
-    elif st.mode == "play" and st.ending and st.next_title:
+    if st.mode == "play" and st.ending and st.next_title:
         arts = list(next_art) if isinstance(next_art, (list, tuple)) else [next_art]
         _draw_up_next(canvas, g, st.next_title, _open_art(arts[0] if arts else None), accent, bg)
     elif st.mode == "play":
@@ -1323,7 +1244,7 @@ def render(track: Track, art_bytes: Optional[bytes], st: CardState = CardState()
         _draw_times(canvas, g, fmt_time(st.position), _right_time(track, st),
                     middle="" if st.mode == "play" else chapter)
     if eq_spot and st.animate and ANIMATED:
-        return _encode_eq(canvas, eq_spot, base.marquee, g)
+        return _encode_eq(canvas, eq_spot)
     if eq_spot and st.animate:  # no animation support: still bars
         _eq(canvas, eq_spot, EQ_STILL)
     return _encode(canvas)
