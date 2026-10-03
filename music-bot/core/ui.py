@@ -77,7 +77,12 @@ def _time_line(p: "GuildPlayer") -> str:
 
 
 def _link(t: Track) -> str:
-    name = _plain(split_feat(t.name)[0], 80)  # featured artists are on the card
+    """The song as a link, named like on the card: 'ซบที่ไหล่ · KRK' (no featured artists,
+    credits or channel tags)."""
+    from core.card import _title_parts
+    song, artist, _ = _title_parts(t)
+    name = _plain(f"{song} · {artist}" if artist and artist.casefold() not in song.casefold()
+                  else song, 80)
     return f"**[{name}]({t.url})**" if t.url.startswith("http") else f"**{name}**"
 
 
@@ -1065,6 +1070,83 @@ async def act_autoplay(inter):
     await p.update_panel()
 
 
+# ⚙️ quick settings on the panel (admins): key, emoji, label
+QUICK_SETTINGS = (
+    ("normalize", "⚖️", "ความดังเท่ากันทุกเพลง"),
+    ("fair", "🤝", "ผลัดกันเล่น (คิวสลับตามคน)"),
+    ("voteskip", "🗳️", "โหวตข้ามเพลง"),
+    ("247", "🌙", "อยู่ในห้องตลอด 24/7"),
+    ("theme", "🎨", "เปลี่ยนธีมการ์ด"),
+    ("layout", "🖼️", "สลับการ์ด แนวนอน / จัตุรัส"),
+    ("compact", "📱", "Panel แบบย่อ (มือถือ)"),
+)
+QUICK_TOGGLES = {"normalize": ("normalize", "normalize"), "fair": ("fair_queue", "fair_queue"),
+                 "voteskip": ("vote_skip_enabled", "vote_skip"), "247": ("stay_247", "stay_247"),
+                 "compact": ("compact", "compact")}  # key: (player attribute, settings column)
+
+
+def _quick_options(p: "GuildPlayer") -> list[discord.SelectOption]:
+    """The quick settings, each saying what it is now and what picking it does."""
+    from cogs.settings import LAYOUT_NAMES, THEME_NAMES
+    out = []
+    for key, emoji, label in QUICK_SETTINGS:
+        if key in QUICK_TOGGLES:
+            on = bool(getattr(p, QUICK_TOGGLES[key][0], False))
+            desc = f"ตอนนี้: {'เปิด' if on else 'ปิด'} · เลือกเพื่อ{'ปิด' if on else 'เปิด'}"
+        elif key == "theme":
+            theme = getattr(p, "card_theme", "blur")
+            desc = f"ตอนนี้: {THEME_NAMES.get(theme, theme)} · เลือกเพื่อเปลี่ยน"
+        else:
+            layout = getattr(p, "card_layout", "wide")
+            desc = f"ตอนนี้: {LAYOUT_NAMES.get(layout, layout)}"
+        out.append(discord.SelectOption(label=label, value=key, emoji=emoji, description=desc))
+    return out
+
+
+async def act_quick(inter, key: str):
+    """Apply one quick setting: the same change as the matching /settings command."""
+    from cogs.settings import LAYOUT_NAMES, THEME_NAMES
+    from core.card import LAYOUTS, THEMES
+    try:
+        p = control(inter)
+    except UserError as exc:
+        return await inter.response.send_message(str(exc), ephemeral=True)
+    if not p.is_admin(inter.user):
+        return await inter.response.send_message(
+            "⚙️ ตั้งค่าด่วนใช้ได้เฉพาะแอดมิน (สิทธิ์จัดการเซิร์ฟเวอร์)", ephemeral=True)
+    db = inter.client.db
+    repost = False
+    if key in QUICK_TOGGLES:
+        attr, column = QUICK_TOGGLES[key]
+        on = not bool(getattr(p, attr, False))
+        if key == "normalize":
+            p.set_normalize(on)
+        else:
+            setattr(p, attr, on)
+        repost = key == "compact"
+        await db.set_setting(inter.guild_id, column, int(on))
+        label = next(lb for k, _, lb in QUICK_SETTINGS if k == key)
+        text = f"{label}: {'เปิด' if on else 'ปิด'}"
+    elif key == "theme":
+        p.card_theme = THEMES[(THEMES.index(p.card_theme) + 1) % len(THEMES)
+                              if p.card_theme in THEMES else 0]
+        await db.set_setting(inter.guild_id, "card_theme", p.card_theme)
+        text = f"ธีมการ์ด: {THEME_NAMES.get(p.card_theme, p.card_theme)}"
+    elif key == "layout":
+        p.card_layout = "square" if p.card_layout == "wide" else LAYOUTS[0]
+        await db.set_setting(inter.guild_id, "card_layout", p.card_layout)
+        text = f"รูปทรงการ์ด: {LAYOUT_NAMES.get(p.card_layout, p.card_layout)}"
+    else:
+        return await inter.response.send_message("ไม่รู้จักตัวเลือกนี้", ephemeral=True)
+    p.note(f"⚙️ {_who(inter)} ตั้ง {text}")
+    await inter.response.send_message(f"⚙️ {text}", ephemeral=True)
+    await audit_inter(inter, "quick setting", text)
+    if repost and p.current:
+        await p.send_panel()  # compact changes the panel's whole shape
+    else:
+        await p.update_panel()
+
+
 VOLUME_BACK = "back"  # volume menu: return to the volume before the last change
 
 
@@ -1208,6 +1290,7 @@ class PanelView(discord.ui.View):
                 item.disabled = True
         elif p.loading:
             self.pause.disabled = True
+        self.quick_select.options = _quick_options(p)
         current = int(round(p.volume * 100))
         self.volume_select.placeholder = f"🔊 ระดับเสียง: {current}%"
         for opt in self.volume_select.options:
@@ -1292,6 +1375,12 @@ class PanelView(discord.ui.View):
                        options=[_volume_option(v) for v in VOLUME_PRESETS])
     async def volume_select(self, inter, select: discord.ui.Select):
         await act_volume(inter, select.values[0])
+
+    @discord.ui.select(placeholder="⚙️ ตั้งค่าด่วน (แอดมิน)", custom_id="mb:quick", row=4,
+                       options=[discord.SelectOption(label=label, value=key, emoji=emoji)
+                                for key, emoji, label in QUICK_SETTINGS])
+    async def quick_select(self, inter, select: discord.ui.Select):
+        await act_quick(inter, select.values[0])
 
 
 class LegacyVolumeView(discord.ui.View):

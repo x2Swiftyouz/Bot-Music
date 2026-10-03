@@ -230,6 +230,7 @@ class GuildPlayer:
         self.requester_birthday = False
         self.session: list[dict] = []  # finished tracks, for the recap card
         self.prev_volume: Optional[int] = None  # volume before the last change
+        self._resolve_ema: Optional[float] = None  # typical lookup time (preload_lead)
         self._run_mark = 0       # session index where the current queue run started
         self._recap_all = False  # the last queue-end recap covered the whole session
         self._end_recap: list[dict] = []  # plays shown on the next "queue ended" panel
@@ -305,6 +306,15 @@ class GuildPlayer:
                 return None
             total += t.duration
         return int(total)
+
+    def queue_seconds(self) -> int:
+        """Length of the waiting songs (0 when one has no known length, e.g. a live)."""
+        total = 0
+        for t in self.queue:
+            if not t.duration:
+                return 0
+            total += t.duration
+        return total
 
     def total_remaining(self) -> Optional[int]:
         return self.eta(len(self.queue))
@@ -855,6 +865,7 @@ class GuildPlayer:
                 self._hold = True
             return
         log.info("[%s] Resolved in %.1fs", self.guild.id, time.monotonic() - t0)
+        self._note_resolve(time.monotonic() - t0)
 
         if config.MAX_DURATION and track.duration and track.duration > config.MAX_DURATION:
             await self.send(f"⛔ **{track.name}** ยาวเกิน {fmt_time(config.MAX_DURATION)} ข้าม")
@@ -990,6 +1001,24 @@ class GuildPlayer:
         self._drop_preload()
         return None
 
+    PRELOAD_MAX = 60  # seconds: never start the next song's FFmpeg earlier than this
+
+    def _note_resolve(self, seconds: float):
+        """Remember how long looking up a song takes here (average of recent ones)."""
+        if seconds < 0.05:
+            return  # cached: says nothing about the network
+        ema = self._resolve_ema
+        self._resolve_ema = seconds if ema is None else ema * 0.7 + seconds * 0.3
+
+    def preload_lead(self) -> float:
+        """How long before the end the next song is prepared. PRELOAD_SECONDS normally; more
+        when lookups here are slow, so the hand-over (and its crossfade) is never late."""
+        lead = float(config.PRELOAD_SECONDS)
+        if self._resolve_ema:
+            fade = config.CROSSFADE_SECONDS if self._can_crossfade() else 0
+            lead = max(lead, 3 * self._resolve_ema + fade + 3)
+        return min(lead, self.PRELOAD_MAX)
+
     async def _preload_loop(self, track: Track):
         """Near the end of a track, start the next track's FFmpeg so it begins instantly."""
         try:
@@ -1002,12 +1031,14 @@ class GuildPlayer:
                 if (self._preload or not self.queue or self.is_paused
                         or self.loop_mode == "track" or not track.duration):
                     continue
-                if track.duration - self.position > config.PRELOAD_SECONDS:
+                if track.duration - self.position > self.preload_lead():
                     continue
                 nxt = self.queue[0]
                 try:
+                    t0 = time.monotonic()
                     await resolve_stream(nxt)
                     src = self.make_source(nxt, 0)
+                    self._note_resolve(time.monotonic() - t0)
                 except Exception as exc:
                     log.debug("preload failed: %s", exc)
                     return
@@ -1122,7 +1153,9 @@ class GuildPlayer:
                 return  # already done or running (a failed lookup is not retried here)
             self._prefetched = nxt
             try:
+                t0 = time.monotonic()
                 await resolve_stream(nxt)
+                self._note_resolve(time.monotonic() - t0)
             except Exception as exc:
                 log.debug("Prefetch failed: %s", exc)
                 return
@@ -1171,6 +1204,7 @@ class GuildPlayer:
             time_mode=TIME_MODES[self.time_format], end_clock=end_clock,
             next_title=nxt.name if nxt else "", next_thumb=(nxt.thumbnail or "") if nxt else "",
             more_thumbs=tuple(q.thumbnail or "" for q in list(self.queue)[1:3]),
+            queue_secs=self.queue_seconds(),
             hot_part=self.in_hot_part(), ending=self.in_ending(),
             hot=self.track_plays, birthday=self.requester_birthday, blink=self._blink,
             theme=self.card_theme, layout="mini" if self.compact else self.card_layout,

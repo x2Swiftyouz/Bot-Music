@@ -335,6 +335,7 @@ class CardState:
     server_icon: str = ""       # the server's icon URL, shown small in the top-right corner
     views: int = 0              # view count chip (0 = none)
     year: str = ""              # release year chip
+    queue_secs: int = 0         # length of the songs waiting (0 = unknown, e.g. a live one)
     listeners: tuple = ()       # avatar URLs of people in the voice channel (a few)
     listener_count: int = 0     # everyone in the voice channel ("+N" for the rest)
 
@@ -841,10 +842,12 @@ def _vinyl(size: int, label, angle: float) -> Image.Image:
     disc = Image.new("RGBA", (size, size), (0, 0, 0, 0))
     d = _Draw(disc)
     r = size / 2
-    d.ellipse((0, 0, size - 1, size - 1), fill=(14, 14, 17, 255))
-    for i, rr in enumerate(range(int(r * 0.38), int(r * 0.97), 3)):
-        c = 30 + (7 if i % 4 == 0 else 0)
-        d.ellipse((r - rr, r - rr, r + rr, r + rr), outline=(c, c, c + 4, 255), width=1)
+    d.ellipse((0, 0, size - 1, size - 1), fill=(20, 20, 24, 255))
+    for i, rr in enumerate(range(int(r * 0.38), int(r * 0.95), 3)):
+        c = 44 + (14 if i % 4 == 0 else 0)  # grooves light enough to see on a dark card
+        d.ellipse((r - rr, r - rr, r + rr, r + rr), outline=(c, c, c + 5, 255), width=1)
+    # a lit rim: the record's edge shows on any background
+    d.ellipse((1, 1, size - 2, size - 2), outline=(150, 150, 160, 255), width=2)
     sheen = Image.new("RGBA", (size, size), (0, 0, 0, 0))
     sd = _Draw(sheen)
     for a in (angle, angle + 180):
@@ -1247,8 +1250,19 @@ def _draw_wave(canvas: Image.Image, g: Geo, track: Track, ratio: Optional[float]
             px = x0 + total * peak
             _icon(d, "hot", px - 8, g.wave_y - 9, ORANGE)
     if ratio is not None and 0 < ratio < 1:
-        px = x0 + total * ratio
-        d.rounded_rectangle((px - 1, g.wave_y - 4, px + 1, g.wave_y + g.wave_h + 4), 1, fill=WHITE)
+        _playhead(canvas, x0 + total * ratio, cy, c1, 4 if g is MINI else 7)
+
+
+def _playhead(canvas: Image.Image, x: float, cy: float, color, r: float):
+    """Where the song is: a white dot with a glow in the cover's colour."""
+    pad = int(r * 3)
+    glow = Image.new("RGBA", (pad * 2, pad * 2), (0, 0, 0, 0))
+    _Draw(glow).ellipse((pad - r * 1.9, pad - r * 1.9, pad + r * 1.9, pad + r * 1.9),
+                        fill=(*_vivid(color), 200))
+    canvas.alpha_composite(glow.filter(ImageFilter.GaussianBlur(r * 0.7)),
+                           (int(x - pad), int(cy - pad)))
+    d = _Draw(canvas)
+    d.ellipse((x - r, cy - r, x + r, cy + r), fill=WHITE)
 
 
 def current_chapter(track: Track, position: float) -> str:
@@ -1314,6 +1328,12 @@ def _volume_chip(volume: int, soft=(255, 255, 255, 38), text=(240, 240, 245)) ->
     else:
         fill, color = soft, text
     return ("vol", f"{volume}%", fill, color, volume == 0)
+
+
+def queue_time(seconds: int) -> str:
+    """'8 นาที', '1 ชม. 5 น.' for the queue chip (whole minutes, so it rarely changes)."""
+    m = max(round(seconds / 60), 1)
+    return f"{m} นาที" if m < 60 else f"{m // 60} ชม. {m % 60} น."
 
 
 def short_count(n: int) -> str:
@@ -1762,7 +1782,9 @@ def render(track: Track, art_bytes: Optional[bytes], st: CardState = CardState()
         if st.loop != "off":
             chips.append(("loop", "เพลง" if st.loop == "track" else "คิว", soft, chip_text, False))
         if st.queue_len:
-            chips.append(("queue", f"{st.queue_len}", soft, chip_text, False))
+            chips.append(("queue", f"{st.queue_len}" + (f" · {queue_time(st.queue_secs)}"
+                                                         if st.queue_secs else ""),
+                          soft, chip_text, False))
         _draw_chips(canvas, g, chips + _badges(st, track) + _info_chips(st, soft, chip_text, track))
         if st.next_title:
             arts = list(next_art) if isinstance(next_art, (list, tuple)) else [next_art]
