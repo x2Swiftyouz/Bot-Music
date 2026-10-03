@@ -1,6 +1,7 @@
 """Embeds and interactive views (buttons, pagination, select menus)."""
 
 import io
+from collections import Counter
 import time
 from typing import TYPE_CHECKING, Awaitable, Callable, Optional
 
@@ -95,6 +96,17 @@ def _link(t: Track) -> str:
     return f"**[{name}]({t.url})**" if t.url.startswith("http") else f"**{name}**"
 
 
+NEXT_CHARS = 32  # the next song's name on the line under the card
+
+
+def _next_name(t: Track) -> str:
+    """The next song by its song name only ('คนบาป'), short, with no markdown in it."""
+    from core.card import display_title
+    name = " ".join((display_title(t) or t.name).split())
+    name = name if len(name) <= NEXT_CHARS else name[:NEXT_CHARS - 1].rstrip() + "…"
+    return discord.utils.escape_markdown(name)
+
+
 def _no_emoji(text: str) -> str:
     import unicodedata
     out = "".join(ch for ch in text if unicodedata.category(ch) not in ("So", "Sk", "Cs", "Co")
@@ -118,8 +130,12 @@ def build_now_playing(p: "GuildPlayer", card: Optional[str] = None) -> discord.E
             e.description = f"{_link(t)} · ⏳ กำลังโหลด…"
             return e
         e.description = f"{_link(t)} · {_countdown(p)}"
-        if p.compact and p.queue:  # the mini card has no "up next" row
-            e.description += f"\n-# ถัดไป: {_plain(p.queue[0].name[:60])}"
+        if p.queue:
+            nxt = _next_name(p.queue[0])
+            if p.compact:  # the mini card has no "up next" row
+                e.description += f"\n-# ถัดไป: {nxt}"
+            else:  # the card shows it too, but this line is what people read
+                e.description += f" · ต่อไป: {nxt}"
         if karaoke := live_lyrics_text(p):
             if p.compact:
                 e.description += "\n" + karaoke
@@ -762,27 +778,112 @@ def play_now(inter: discord.Interaction) -> str:
     return ""
 
 
-def build_lyrics_pages(lyr: Lyrics, max_chars: int = 1800) -> list[discord.Embed]:
+LYRICS_COLOR = 0xEB459E  # lyrics of a song that is not playing (no cover colour to use)
+
+
+def _lyric_key(line: str) -> str:
+    return " ".join(line.casefold().split()).strip(" .,!?…~-")
+
+
+def _fold_lines(lines: list[str]) -> list[str]:
+    """'โอ้ โอ้' twice in a row -> one line with '(×2)'."""
+    out, prev, n = [], None, 0
+    for line in lines + [None]:
+        if line is not None and prev is not None and _lyric_key(line) == _lyric_key(prev):
+            n += 1
+            continue
+        if prev is not None:
+            out.append(prev + (f" (×{n})" if n > 1 else ""))
+        prev, n = line, 1
+    return out
+
+
+def lyric_blocks(plain: str) -> list[tuple[str, str]]:
+    """The lyrics as stanzas: (markdown, plain text). A stanza sung again right after itself
+    shows once with '×N'; a stanza that comes back (the chorus) is bold under a small
+    '🔁 ท่อนฮุก' label, so the main part stands out."""
+    stanzas, cur = [], []
+    for line in plain.splitlines():
+        if line.strip():
+            cur.append(line.strip())
+        elif cur:
+            stanzas.append(cur)
+            cur = []
+    if cur:
+        stanzas.append(cur)
+    keys = [tuple(_lyric_key(x) for x in st) for st in stanzas]
+    seen = Counter(keys)
+    out, i = [], 0
+    while i < len(stanzas):
+        n = 1
+        while i + n < len(stanzas) and keys[i + n] == keys[i]:
+            n += 1
+        lines = _fold_lines(stanzas[i])
+        safe = [discord.utils.escape_markdown(x) for x in lines]
+        chorus = seen[keys[i]] > 1 and len(stanzas[i]) > 1
+        if chorus:
+            label = "-# 🔁 ท่อนฮุก" + (f" · ร้อง {n} รอบ" if n > 1 else "")
+            text = label + "\n" + "\n".join(f"**{x}**" for x in safe)
+        else:
+            text = "\n".join(safe) + (f"\n-# ×{n}" if n > 1 else "")
+        out.append((text, "\n".join(lines)))
+        i += n
+    return out
+
+
+def _md_plain_lines(text: str, plain: str) -> list[Optional[str]]:
+    """Pair each markdown line of a stanza with its plain line (None for the labels)."""
+    rest = iter(plain.splitlines())
+    return [None if md.startswith("-# ") else next(rest, None) for md in text.splitlines()]
+
+
+def build_lyrics_pages(lyr: Lyrics, max_chars: int = 1800,
+                       color: Optional[int] = None) -> list[discord.Embed]:
+    return [e for e, _ in lyrics_pages(lyr, max_chars, color)]
+
+
+def lyrics_pages(lyr: Lyrics, max_chars: int = 1800,
+                 color: Optional[int] = None) -> list[tuple[discord.Embed, str]]:
+    """Lyrics pages (embed, the page's plain lines for the quote card). Stanzas are kept
+    whole on a page; the colour is the song's cover colour when it is playing."""
+    color = LYRICS_COLOR if color is None else color
     head = f"🎤 {lyr.title}" + (f" · {lyr.artist}" if lyr.artist else "")
     if lyr.instrumental and not lyr.plain:
-        return [discord.Embed(title=head[:256], description="เพลงบรรเลง ไม่มีเนื้อร้อง",
-                              color=0xEB459E)]
-    chunks, cur = [], ""
-    for line in lyr.plain.splitlines():
-        if len(cur) + len(line) + 1 > max_chars and cur:
-            chunks.append(cur)
-            cur = ""
-        cur += line + "\n"
+        return [(discord.Embed(title=head[:256], description="เพลงบรรเลง ไม่มีเนื้อร้อง",
+                               color=color), "")]
+    blocks = []
+    for text, plain in lyric_blocks(lyr.plain):
+        if len(text) <= max_chars:
+            blocks.append((text, plain))
+            continue
+        # one huge stanza (lyrics without blank lines): cut it between lines
+        part, part_raw = "", []
+        for md, line in zip(text.splitlines(), _md_plain_lines(text, plain)):
+            if part and len(part) + len(md) + 1 > max_chars:
+                blocks.append((part, "\n".join(part_raw)))
+                part, part_raw = "", []
+            part += ("\n" if part else "") + md
+            if line is not None:
+                part_raw.append(line)
+        if part:
+            blocks.append((part, "\n".join(part_raw)))
+    chunks, cur, raw = [], "", ""
+    for text, plain in blocks:
+        if cur and len(cur) + len(text) + 2 > max_chars:
+            chunks.append((cur, raw))
+            cur, raw = "", ""
+        cur += ("\n\n" if cur else "") + text
+        raw += ("\n" if raw else "") + plain
     if cur.strip():
-        chunks.append(cur)
-    chunks = chunks or ["(ไม่มีเนื้อเพลง)"]
+        chunks.append((cur, raw))
+    chunks = chunks or [("(ไม่มีเนื้อเพลง)", "")]
     tag = " · synced" if lyr.synced else ""
-    return [discord.Embed(title=head[:256], description=c, color=0xEB459E)
-            .set_footer(text=f"lrclib.net{tag} · หน้า {i}/{len(chunks)}")
-            for i, c in enumerate(chunks, 1)]
+    return [(discord.Embed(title=head[:256], description=c[:4096], color=color)
+             .set_footer(text=f"lrclib.net{tag} · หน้า {i}/{len(chunks)}"), r)
+            for i, (c, r) in enumerate(chunks, 1)]
 
 
-def build_lyrics_now(lyr: Lyrics, position: float) -> discord.Embed:
+def build_lyrics_now(lyr: Lyrics, position: float, color: Optional[int] = None) -> discord.Embed:
     """Lines around the one playing now (synced lyrics only)."""
     idx = lyr.line_at(position)
     lines = []
@@ -792,7 +893,7 @@ def build_lyrics_now(lyr: Lyrics, position: float) -> discord.Embed:
     if idx < 0:
         lines.insert(0, "-# ♪ ยังไม่ถึงท่อนร้อง")
     e = discord.Embed(title=f"🎤 {lyr.title}"[:256], description="\n".join(lines)[:4000],
-                      color=0xEB459E)
+                      color=LYRICS_COLOR if color is None else color)
     e.set_footer(text=f"ตอนนี้ {fmt_time(position)} · กด 📍 อีกครั้งเพื่ออัปเดต")
     return e
 
@@ -802,8 +903,13 @@ class LyricsView(PagesView):
 
     def __init__(self, lyr: Lyrics, author_id: int, p: Optional["GuildPlayer"] = None,
                  url: str = ""):
-        super().__init__(build_lyrics_pages(lyr), author_id, timeout=600,
+        # the song's colour while it plays, like the panel
+        self.color = (track_color(p.current) if p and p.current and url
+                      and p.current.url == url else None)
+        pages = lyrics_pages(lyr, color=self.color)
+        super().__init__([e for e, _ in pages], author_id, timeout=600,
                          deny_text="ใช้ `/lyrics` เปิดของตัวเอง")
+        self.raw = [r for _, r in pages]  # each page's lines without the markdown
         self.lyr, self.p, self.url = lyr, p, url
         if not (lyr.synced and p and url):
             self.remove_item(self.now_btn)
@@ -817,27 +923,33 @@ class LyricsView(PagesView):
         track = p.current if playing else Track(title=self.lyr.title, url=self.url or "",
                                                 artist=self.lyr.artist)
         position = p.position if playing and self.lyr.synced else None
-        page = self.pages[self.index].description or ""
+        page = self.raw[self.index] if self.index < len(self.raw) else ""
         view = QuoteView(self.lyr, track, inter.user.id, position, page)
         await inter.response.send_message(
-            "🖼 เลือก 1–2 บรรทัดที่จะทำเป็นการ์ด แล้วบอทจะส่งลงห้องนี้", view=view, ephemeral=True)
+            f"🖼 เลือก 1–{QUOTE_MAX} บรรทัดที่จะทำเป็นการ์ด แล้วบอทจะส่งลงห้องนี้", view=view,
+            ephemeral=True)
 
     @discord.ui.button(emoji="📍", label="ท่อนปัจจุบัน", style=discord.ButtonStyle.secondary)
     async def now_btn(self, inter: discord.Interaction, _):
         p = self.p
         if not p or not p.current or p.current.url != self.url:
             return await inter.response.send_message("เพลงเปลี่ยนแล้ว", ephemeral=True)
-        await inter.response.edit_message(embed=build_lyrics_now(self.lyr, p.position), view=self)
+        await inter.response.edit_message(embed=build_lyrics_now(self.lyr, p.position, self.color),
+                                          view=self)
+
+
+QUOTE_MAX = 4  # lyric lines on one shared card
 
 
 class QuoteView(discord.ui.View):
-    """Pick one or two lyric lines; the bot posts them as an image card in the channel."""
+    """Pick one to four lyric lines; the bot posts them as an image card in the channel,
+    with a ▶ button that jumps to that part while the song plays."""
 
     def __init__(self, lyr: Lyrics, track: Track, author_id: int,
                  position: Optional[float], page_text: str):
         super().__init__(timeout=180)
         self.track, self.author_id = track, author_id
-        options, self.lines = [], []
+        options, self.lines, self.times = [], [], []
         if position is not None and lyr.synced:  # around the line playing now
             now = lyr.line_at(position + LYRICS_LEAD)
             start = max(now - 4, 0)
@@ -845,36 +957,47 @@ class QuoteView(discord.ui.View):
                 at, text = lyr.synced[i]
                 if text.strip():
                     self.lines.append(text.strip())
+                    self.times.append(at)
                     options.append(discord.SelectOption(
                         label=text.strip()[:100], description=fmt_time(at),
                         value=str(len(self.lines) - 1), default=i == now))
-        else:  # the lyrics page being read
+        else:  # the lyrics page being read; synced lyrics still tell when a line is sung
+            sung = {}
+            for at, text in lyr.synced:
+                sung.setdefault(_lyric_key(text), at)
             for text in page_text.splitlines():
                 if text.strip() and len(self.lines) < 25:
+                    at = sung.get(_lyric_key(text))
                     self.lines.append(text.strip())
-                    options.append(discord.SelectOption(label=text.strip()[:100],
-                                                        value=str(len(self.lines) - 1)))
+                    self.times.append(at)
+                    options.append(discord.SelectOption(
+                        label=text.strip()[:100], value=str(len(self.lines) - 1),
+                        description=fmt_time(at) if at is not None else None))
         self.pick.options = options or [discord.SelectOption(label="♪", value="-1")]
-        self.pick.max_values = min(2, len(self.pick.options))
+        self.pick.max_values = min(QUOTE_MAX, len(self.pick.options))
 
     async def interaction_check(self, inter: discord.Interaction) -> bool:
         return inter.user.id == self.author_id
 
-    @discord.ui.select(placeholder="เลือกบรรทัด (ได้ 2 บรรทัดติดกัน)", min_values=1)
+    @discord.ui.select(placeholder=f"เลือกบรรทัด (ได้ถึง {QUOTE_MAX} บรรทัดติดกัน)", min_values=1)
     async def pick(self, inter: discord.Interaction, select: discord.ui.Select):
         idx = sorted(int(v) for v in select.values if int(v) >= 0)
         lines = [self.lines[i] for i in idx] or ["♪"]
+        at = self.times[idx[0]] if idx and idx[0] < len(self.times) else None
         await inter.response.edit_message(content="🖼 กำลังทำการ์ด…", view=None)
-        from core.card import EXT, make_quote_card
-        data = await make_quote_card(lines, self.track)
+        from core.card import EXT, display_title, make_quote_card
+        data = await make_quote_card(lines, self.track, at)
         if not data:
             return await inter.edit_original_response(content="ทำการ์ดไม่สำเร็จ ลองใหม่อีกครั้ง")
         file = discord.File(io.BytesIO(data), filename=f"lyrics.{EXT}",
                             description=" / ".join(lines)[:1000])
+        view = part_view(self.track, at)
         try:
-            title = _plain(self.track.name, 80)
+            title = _plain(display_title(self.track), 80)
+            kwargs = {"view": view} if view else {}
             await inter.channel.send(f"🎤 {who_label(inter.user)} แชร์ท่อนจาก **{title}**",
-                                     file=file, allowed_mentions=discord.AllowedMentions.none())
+                                     file=file, allowed_mentions=discord.AllowedMentions.none(),
+                                     **kwargs)
         except discord.HTTPException:
             return await inter.edit_original_response(content="ส่งการ์ดในห้องนี้ไม่ได้")
         await inter.edit_original_response(content="✅ ส่งการ์ดเนื้อเพลงแล้ว")
@@ -1290,6 +1413,48 @@ def _effect_note(p: "GuildPlayer") -> str:
         return "🎵 {who} ปิดเอฟเฟกต์เสียง"
     name, emoji, *_ = EFFECTS[p.effect]
     return f"{emoji} {{who}} เปิดเอฟเฟกต์ {name}"
+
+
+PART_PREFIX = "mb:part:"  # ▶ under a shared lyric card: mb:part:<seconds>:<song key>
+PART_LEAD = 1.5          # start a little before the line so it is heard from its start
+
+
+def song_key(track: Track) -> str:
+    """Short id of a song for a button's custom_id: the YouTube id, else a URL hash."""
+    import hashlib
+    return track.video_id or hashlib.sha1((track.url or "").encode()).hexdigest()[:12]
+
+
+def part_view(track: Track, at: Optional[float]) -> Optional[discord.ui.View]:
+    """'▶ ฟังท่อนนี้ (1:23)': handled by act_part through its custom_id, so it keeps working
+    after the view times out and after a restart."""
+    if at is None or not (track.url or "").startswith("http"):
+        return None
+    view = discord.ui.View(timeout=None)
+    view.add_item(discord.ui.Button(emoji="▶️", label=f"ฟังท่อนนี้ ({fmt_time(at)})",
+                                    style=discord.ButtonStyle.secondary,
+                                    custom_id=f"{PART_PREFIX}{int(at)}:{song_key(track)}"))
+    return view
+
+
+async def act_part(inter: discord.Interaction, custom_id: str):
+    """Jump to a shared lyric card's part, when that song is the one playing."""
+    try:
+        at_text, key = custom_id[len(PART_PREFIX):].split(":", 1)
+        at = int(at_text)
+    except ValueError:
+        return await inter.response.send_message("ปุ่มนี้ใช้ไม่ได้แล้ว", ephemeral=True)
+
+    def run(p: "GuildPlayer") -> Optional[str]:
+        t = p.current
+        if not t or song_key(t) != key:
+            return "▶ ใช้ได้ตอนเพลงนี้กำลังเล่นอยู่ ใส่เพลงนี้เข้าคิวก่อนแล้วกดอีกครั้ง"
+        if not t.duration or at >= t.duration:
+            return "ข้ามไปท่อนนี้ไม่ได้"
+        p.restart_at(max(at - PART_LEAD, 0))
+        return None
+    await _act(inter, run, f"part {at}",
+               note=lambda p, msg: None if msg else f"🎤 {{who}} ข้ามไปท่อนที่ {fmt_time(at)}")
 
 
 async def act_settings(inter):

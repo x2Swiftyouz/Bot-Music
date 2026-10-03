@@ -28,7 +28,8 @@ from PIL import (Image, ImageChops, ImageDraw, ImageEnhance, ImageFilter, ImageF
                  ImageStat, features)
 
 import config
-from core.sources import SOURCE_COLORS, Track, clean_artist, detect_source, fmt_time, split_feat
+from core.sources import (_BRACKETS, SOURCE_COLORS, Track, clean_artist, detect_source, fmt_time,
+                          split_feat)
 
 log = logging.getLogger("musicbot.card")
 
@@ -499,10 +500,53 @@ def _artist_name(artist: str) -> str:
     return _one_script(artist)
 
 
-def _title_parts(track: Track) -> tuple[str, str, str]:
-    """(song, artists, featured) for the card: 'HK & GH - Lost or Love FT. A & B' with
-    channel 'HK' -> ('Lost or Love', 'HK & GH', 'A & B'). 'Song - Artist' works too."""
+# Bracketed words that name a version of the song: shown as a chip, not in the title
+_VERSION = re.compile(
+    r"\b(?:session|live|acoustic|unplugged|remix|cover|ver\.?|version|sped\s*up|slowed|"
+    r"nightcore|instrumental|piano|demo|studio|concert|orchestra(?:l)?|edit|mix|rework|"
+    r"reprise|remaster(?:ed)?|band|karaoke|english|japanese|korean|chinese)\b|"
+    r"แสดงสด|อะคูสติก|คอนเสิร์ต|เวอร์ชัน|เวอร์ชั่น|รีมิกซ์|คัฟเวอร์", re.I)
+LABEL_CHARS = 22    # a longer label name is cut on its chip
+VERSION_CHARS = 24  # longer bracketed text stays out of the chip
+
+
+@dataclass
+class SongParts:
+    song: str
+    artist: str
+    feat: str = ""
+    version: str = ""  # "Rock Session", "Live", "Acoustic Ver."
+    label: str = ""    # the uploading channel when it is not the artist (a record label)
+
+
+def _pull_versions(title: str) -> tuple[str, str]:
+    """'Song [Rock Session] (Live)' -> ('Song', 'Rock Session'): version brackets out of the
+    title, the first one kept for the chip."""
+    found = []
+
+    def take(m):
+        inner = m.group(1).strip()
+        if inner and _VERSION.search(inner) and not split_feat(f"x ({inner})")[1]:
+            found.append(inner)
+            return " "
+        return m.group(0)
+    out = re.sub(r"\s{2,}", " ", _BRACKETS.sub(take, title)).strip(" -–—|")
+    version = next((v for v in found if len(v) <= VERSION_CHARS), "")
+    return (out or title), version
+
+
+def _has_thai(text: str) -> bool:
+    return any("\u0e00" <= c <= "\u0e7f" or "\u0e80" <= c <= "\u0eff" for c in text)
+
+
+def song_parts(track: Track) -> SongParts:
+    """Song, artists, featured artists, version and label for the card and the links.
+    'HK & GH - Lost or Love FT. A & B' with channel 'HK' -> ('Lost or Love', 'HK & GH',
+    'A & B'). 'Song - Artist' works too. Uploaded by a label ('หลงกล - LHAM (Rock Quest
+    Project) [Rock Session]' from 'RS Music Thailand'): song 'หลงกล', artist 'LHAM',
+    version 'Rock Session', label 'RS Music Thailand'."""
     title, feat = split_feat(track.name)
+    title, version = _pull_versions(title)
     artist = clean_artist((track.artist or "").strip())
     # "แต่งงานกันนะ-Rapper Tery": a bare "-" counts too, but only when one side names
     # the artist (so "Spider-Man" stays whole)
@@ -513,11 +557,37 @@ def _title_parts(track: Track) -> tuple[str, str, str]:
             continue
         if left.lower().startswith(artist.lower()) or _same_artist(left, artist):
             left, left_feat = split_feat(left)
-            return _one_script(right), _artist_name(left), feat or left_feat
+            return SongParts(_one_script(right), _artist_name(left), feat or left_feat, version)
         if _same_artist(right, artist):  # 'Song - Artist': the channel names the artist
             right, right_feat = split_feat(right)
-            return _one_script(left), _artist_name(artist), feat or right_feat
-    return _one_script(title), _artist_name(artist), feat
+            return SongParts(_one_script(left), _artist_name(artist), feat or right_feat,
+                             version)
+    # The channel names neither side: a label uploaded it. Thai titles go 'Song - Artist',
+    # others 'Artist - Song'. Only a spaced dash, once, with short sides.
+    for sep in (" - ", " – ", " — "):
+        parts = [x.strip() for x in title.split(sep)]
+        if len(parts) != 2 or not all(parts) or max(len(x) for x in parts) > 60:
+            continue
+        if _VERSION.search(parts[1]) and len(parts[1]) <= VERSION_CHARS:
+            # 'Song - Remastered 2011', 'Song - Live at Wembley': a version, not an artist
+            return SongParts(_one_script(parts[0]), _artist_name(artist), feat,
+                             version or parts[1])
+        song, who = parts if _has_thai(title) else parts[::-1]
+        extra = [m.group(1).strip() for m in _BRACKETS.finditer(who)]
+        who = re.sub(r"\s{2,}", " ", _BRACKETS.sub(" ", who)).strip(" -–—|") or who
+        if not version:  # '(Rock Quest Project)' after the artist: the chip if short
+            version = next((x for x in extra if x and len(x) <= VERSION_CHARS), "")
+        who, who_feat = split_feat(who)
+        label = artist if artist and not _same_artist(who, artist) else ""
+        return SongParts(_one_script(song), _artist_name(who), feat or who_feat, version,
+                         label)
+    return SongParts(_one_script(title), _artist_name(artist), feat, version)
+
+
+def _title_parts(track: Track) -> tuple[str, str, str]:
+    """(song, artists, featured), see song_parts."""
+    p = song_parts(track)
+    return p.song, p.artist, p.feat
 
 
 def display_title(track: Track) -> str:
@@ -683,6 +753,12 @@ def _icon(d: ImageDraw.ImageDraw, kind: str, x: float, cy: float, color, muted=F
         d.polygon([P(2, -8), P(13, -8), P(13, 8), P(7.5, 3.5), P(2, 8)], fill=color)
     elif kind.startswith("flag:"):
         _flag(d, kind[5:], box(0, -6, 17, 6), k)
+    elif kind == "tag":  # a price-tag shape: which version of the song
+        d.polygon([P(0, -6), P(10, -6), P(16, 0), P(10, 6), P(0, 6)], fill=color)
+        d.ellipse(box(2.5, -1.5, 5.5, 1.5), fill=(40, 40, 50))  # the hole
+    elif kind == "disc":  # a record: the label that put the song out
+        d.ellipse(box(0, -7, 14, 7), outline=color, width=w2)
+        d.ellipse(box(5, -2, 9, 2), fill=color)
     elif kind == "fx":  # mixer sliders
         for i, knob in enumerate((-3, 3, -1)):
             d.line(box(2 + i * 6, -7, 2 + i * 6, 7), fill=color, width=w2)
@@ -1406,6 +1482,10 @@ def _info_chips(st: CardState, fill, text, track: Optional[Track] = None) -> lis
     runs out."""
     out = []
     lang = song_language(f"{track.title} {track.artist or ''}") if track is not None else None
+    label = song_parts(track).label if track is not None else ""
+    if label:  # the record label that uploaded it ('RS Music Thailand' -> 'RS Music')
+        name = re.sub(r"(?i)\s+(?:thailand|official|channel|thai)\b", "", label).strip() or label
+        out.append(("disc", _short(name, LABEL_CHARS), fill, text, False))
     if lang:
         out.append((f"flag:{lang}", LANGUAGES[lang], fill, text, False))
     if st.views:
@@ -1425,8 +1505,12 @@ def is_live_show(track: Track) -> bool:
 
 def _badges(st: CardState, track: Optional[Track] = None) -> list[tuple]:
     out = []
-    if track is not None and is_live_show(track):
+    live = track is not None and is_live_show(track)
+    if live:
         out.append(("live", "แสดงสด", (*RED, 225), WHITE, False))
+    version = song_parts(track).version if track is not None else ""
+    if version and not (live and re.fullmatch(r"(?i)live|แสดงสด", version.strip())):
+        out.append(("tag", version, (255, 255, 255, 46), WHITE, False))
     if st.hot >= HOT_THRESHOLD:
         out.append(("hot", f"ฮิต ×{st.hot}", (255, 122, 26, 215), WHITE, False))
     if st.birthday:
@@ -2018,10 +2102,14 @@ def _split_middle(d, text: str, fnt, max_w: float) -> Optional[list[str]]:
     return None
 
 
+QUOTE_LINES = 4  # lyric lines on one card
+QUOTE_COVER = 380
+
+
 def _quote_lines(d, text: list[str], max_w: float, height: float) -> tuple[list[str], int]:
     """Biggest size where every lyric line fits: whole, else split between phrases,
-    else wrapped by characters as a last resort."""
-    for size in (60, 54, 48, 42):
+    else wrapped by characters as a last resort. Four lines get smaller letters than one."""
+    for size in (60, 54, 48, 44, 40, 36, 32):
         fnt = font("Bold", size)
         out = []
         for ln in text:
@@ -2032,63 +2120,80 @@ def _quote_lines(d, text: list[str], max_w: float, height: float) -> tuple[list[
             else:
                 break
         else:
-            if len(out) * int(size * 1.45) <= height:
+            if len(out) * int(size * 1.4) <= height:
                 return out, size
-    fnt = font("Bold", 36)
+    fnt = font("Bold", 28)
     out = []
     for ln in text:
-        out += _wrap(d, ln, fnt, max_w, 3)
-    return out[:5], 36
+        out += _wrap(d, ln, fnt, max_w, 2)
+    return out[:8], 28
 
 
-def render_quote(lines: list[str], track: Track, art_bytes: Optional[bytes]) -> bytes:
-    """A lyric line (or two) as a shareable card: big text over the blurred cover,
-    with the cover, title and artist at the bottom."""
+def render_quote(lines: list[str], track: Track, art_bytes: Optional[bytes],
+                 at: Optional[float] = None) -> bytes:
+    """Lyric lines (up to four) as a shareable card: the cover big on the left, the words
+    on the right over the blurred cover in its colours, then the song, the artist and
+    when the part is sung ("ท่อนที่ 1:23")."""
     w, h = QUOTE_W, QUOTE_H
     art = _open_art(art_bytes)
     a1, a2 = _palette(art)
     if art is not None:
         canvas = ImageOps.fit(art.convert("RGB"), (w, h)).filter(
-            ImageFilter.GaussianBlur(36)).convert("RGBA")
+            ImageFilter.GaussianBlur(40)).convert("RGBA")
         canvas.alpha_composite(Image.new("RGBA", (w, h), (10, 10, 16, 150)))
     else:
         canvas = Image.new("RGBA", (w, h), (*_mix((14, 14, 20), a1, 0.2), 255))
-    canvas.alpha_composite(_gradient((w, h), a1, a2, 70, 10))
+    canvas.alpha_composite(_gradient((w, h), a1, a2, 80, 14))
     bg = tuple(int(v) for v in ImageStat.Stat(canvas.convert("RGB")).mean)
     accent = _readable(a1, bg)
-    d = _Draw(canvas)
 
-    # the lyric: as big as fits in four lines
-    text = [ln.strip() or "♪" for ln in lines if ln is not None][:2] or ["♪"]
-    max_w, top, bottom = w - 240, 90, h - 190
-    wrapped, size = _quote_lines(d, text, max_w, bottom - top)
-    fnt, lh = font("Bold", size), int(size * 1.45)
+    # the cover, big, with its own glow
+    size = QUOTE_COVER
+    cx, cy = 72, (h - size) // 2
+    glow = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+    _Draw(glow).rounded_rectangle((cx - 6, cy - 6, cx + size + 6, cy + size + 6), 30,
+                                  fill=(*a1, 150))
+    canvas.alpha_composite(glow.filter(ImageFilter.GaussianBlur(28)))
+    _paste_cover(canvas, _cover(art, size, a1), cx, cy, radius=24)
+
+    # the lyric, as big as fits
+    tx = cx + size + 64
+    max_w = w - tx - 64
+    d = _Draw(canvas)
+    text = [ln.strip() or "♪" for ln in lines if ln is not None][:QUOTE_LINES] or ["♪"]
+    top, bottom = 70, h - 210
+    wrapped, fsize = _quote_lines(d, text, max_w, bottom - top)
+    fnt, lh = font("Bold", fsize), int(fsize * 1.4)
     y = top + (bottom - top - len(wrapped) * lh) / 2
-    d.text((100 - 8, y - size * 0.9), "“", font=font("Bold", size * 2), fill=accent)
+    d.text((tx - 6, y - fsize * 0.75), "“", font=font("Bold", round(fsize * 1.8)), fill=accent)
     for i, ln in enumerate(wrapped):
-        d.text((100 + 40, y + i * lh), ln, font=fnt, fill=WHITE)
+        d.text((tx + fsize * 0.75, y + i * lh), ln, font=fnt, fill=WHITE)
 
-    # footer: cover, title, artist
-    s_ = 104
-    cover = _rounded(_cover(art, s_, a1), 14)
-    fy = h - 60 - s_
-    canvas.alpha_composite(cover, (100, fy))
-    d = _Draw(canvas)
-    tx = 100 + s_ + 24
-    title_f, artist_f = font("Bold", 32), font("Regular", 24)
-    d.text((tx, fy + 14), _fit(d, display_title(track), title_f, w - tx - 100), font=title_f,
+    # the song under a thin line
+    fy = h - 176
+    d.line((tx, fy, w - 64, fy), fill=_mix(accent, bg, 0.5), width=2)
+    title_f, artist_f, time_f = font("Bold", 34), font("Regular", 24), font("Medium", 20)
+    d.text((tx, fy + 22), _fit(d, display_title(track), title_f, max_w), font=title_f,
            fill=WHITE)
     if display_artist(track):
-        d.text((tx, fy + 60), _fit(d, display_artist(track), artist_f, w - tx - 100), font=artist_f,
+        d.text((tx, fy + 68), _fit(d, display_artist(track), artist_f, max_w), font=artist_f,
                fill=_readable((200, 200, 212), bg))
-    d.line((100, fy - 28, w - 100, fy - 28), fill=(*_mix(accent, bg, 0.5), ), width=2)
+    if at is not None:  # when this part is sung, as a small pill
+        label = f"ท่อนที่ {fmt_time(at)}"
+        pw = d.textlength(label, font=time_f) + 30
+        py = fy + 112
+        layer = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+        _Draw(layer).rounded_rectangle((tx, py, tx + pw, py + 34), 17, fill=(*accent, 70))
+        canvas.alpha_composite(layer)
+        _Draw(canvas).text((tx + 15, py + 17), label, font=time_f, fill=WHITE, anchor="lm")
     return _encode(canvas)
 
 
-async def make_quote_card(lines: list[str], track: Track) -> Optional[bytes]:
+async def make_quote_card(lines: list[str], track: Track,
+                          at: Optional[float] = None) -> Optional[bytes]:
     try:
         art = await fetch_track_art(track)
-        return await _run(render_quote, list(lines), track, art)
+        return await _run(render_quote, list(lines), track, art, at)
     except Exception as exc:
         log.warning("quote card failed: %s", exc)
         return None

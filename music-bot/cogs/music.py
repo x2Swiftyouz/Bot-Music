@@ -15,8 +15,8 @@ from core.player import EFFECTS, GuildPlayer
 from core.sources import (Track, fmt_time, parse_time, search_busy, search_choices,
                           search_tracks)
 from core import clean, lyrics
-from core.ui import (LOOP_ICON, LyricsView, QueueView, SearchView, apply_effect,
-                     build_added_embed, build_now_playing, wait_text, who_label)
+from core.ui import (LOOP_ICON, PART_PREFIX, LyricsView, QueueView, SearchView, act_part,
+                     apply_effect, build_added_embed, build_now_playing, wait_text, who_label)
 
 log = logging.getLogger("musicbot.music")
 
@@ -351,6 +351,15 @@ class Music(commands.Cog):
         p = control(inter)
         p.restart_at(0)
         await inter.response.send_message("🔄 เล่นใหม่")
+
+    @commands.Cog.listener()
+    async def on_interaction(self, inter: discord.Interaction):
+        """▶ under a shared lyric card: its custom_id says which part of which song, so it
+        works on old cards and after a restart (see ui.part_view)."""
+        cid = (inter.data or {}).get("custom_id", "") if inter.type == \
+            discord.InteractionType.component else ""
+        if cid.startswith(PART_PREFIX) and not inter.response.is_done():
+            await act_part(inter, cid)
 
     # ------------------------------------------------------- voice events
     @commands.Cog.listener()
