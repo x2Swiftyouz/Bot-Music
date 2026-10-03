@@ -123,6 +123,16 @@ def clock_after(seconds: float) -> str:
 
 TIME_MODES = ("length", "remaining", "clock")
 
+# Ears hear -10 dB as "half as loud", so the volume percent is turned into gain with
+# gain = (percent/100) ** 1.66: 50% sounds half as loud as 100%, 25% a quarter.
+# (Plain gain = percent/100 makes 75% sound almost like 100% and 50% barely softer.)
+LOUDNESS_EXP = 1.66
+
+
+def loudness_gain(volume: float) -> float:
+    """Volume as people hear it (1.0 = full) -> audio gain."""
+    return max(volume, 0.0) ** LOUDNESS_EXP
+
 class GuildPlayer:
     def __init__(self, bot: "MusicBot", guild: discord.Guild, settings: dict):
         self.bot = bot
@@ -335,7 +345,7 @@ class GuildPlayer:
             if src:
                 if vc.is_paused():
                     src.fade_to(0, 0)
-                src.fade_to(self.volume, fade)
+                src.fade_to(self.gain, fade)
             if vc.is_paused():
                 vc.resume()
             self._paused_total += time.monotonic() - self._paused_at
@@ -467,12 +477,17 @@ class GuildPlayer:
         self.loop_mode = LOOP_MODES[(LOOP_MODES.index(self.loop_mode) + 1) % 3]
         return self.loop_mode
 
+    @property
+    def gain(self) -> float:
+        """Audio gain for the current volume (see loudness_gain)."""
+        return loudness_gain(self.volume)
+
     def set_volume(self, percent: int):
         self.volume = max(0, min(percent, 150)) / 100
         src = self._smooth_source()
         if src:
             if self._paused_at is None:
-                src.fade_to(self.volume, config.VOLUME_RAMP_MS)  # smooth ramp
+                src.fade_to(self.gain, config.VOLUME_RAMP_MS)  # smooth ramp
         elif self.current:
             self._drop_preload()
             self.restart_at(self.position)  # FFmpeg applies volume, restart in place
@@ -494,7 +509,7 @@ class GuildPlayer:
         if start == 0:
             chain.append("afade=t=in:st=0:d=1.5")
         if not OPUS_LOADED:
-            chain.append(f"volume={self.volume:.2f}")
+            chain.append(f"volume={self.gain:.3f}")
         opts = "-vn -loglevel error"
         if chain:
             opts += f' -af "{",".join(chain)}"'
@@ -506,10 +521,10 @@ class GuildPlayer:
                 raw = _PCMAudio(src_arg, executable=exe, pipe=pipe,
                                 before_options=before or None, options=opts)
                 # Seek restarts fade in; track starts use FFmpeg afade instead.
-                src = SmoothVolume(raw, volume=self.volume,
+                src = SmoothVolume(raw, volume=self.gain,
                                    start_gain=0.0 if start > 0 else None)
                 if start > 0:
-                    src.fade_to(self.volume, max(config.FADE_MS, 200))
+                    src.fade_to(self.gain, max(config.FADE_MS, 200))
             else:
                 src = CountingSource(_OpusAudio(
                     src_arg, executable=exe, pipe=pipe, bitrate=128,
@@ -522,7 +537,7 @@ class GuildPlayer:
         return src
 
     def audio_signature(self) -> str:
-        return f"{OPUS_LOADED or self.volume}|{self.normalize}"
+        return f"{OPUS_LOADED or self.gain}|{self.normalize}"
 
     def set_normalize(self, enabled: bool):
         """Filters are baked into FFmpeg: restart the track in place to apply."""
