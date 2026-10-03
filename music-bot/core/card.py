@@ -87,9 +87,10 @@ class Geo:
     time_y: int
 
 
-WIDE = Geo(w=1000, h=446, art=350, art_x=40, art_y=48, x0=430, max_w=530, center=False,
-           label_y=40, title_y=72, title_size=38, chips_y=250, next_y=292,
-           wave_y=336, wave_h=40, time_y=382)
+# 3:1 like Groove's MusicCard (780x260), drawn larger so it stays sharp.
+WIDE = Geo(w=1200, h=400, art=328, art_x=36, art_y=36, x0=404, max_w=756, center=False,
+           label_y=32, title_y=60, title_size=34, chips_y=226, next_y=266,
+           wave_y=310, wave_h=34, time_y=350)
 # Square flows below the text and is cropped to its content (see _flow).
 SQUARE = Geo(w=640, h=820, art=300, art_x=170, art_y=36, x0=40, max_w=560, center=True,
              label_y=352, title_y=384, title_size=32, chips_y=0, next_y=0,
