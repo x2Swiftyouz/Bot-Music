@@ -123,6 +123,8 @@ class CardState:
     layout: str = "wide"
     mode: str = "play"          # play | share | loading | error
     reason: str = ""
+    avatar: str = ""            # requester's avatar URL (drawn before "ขอโดย")
+    animate: bool = False       # play mode: moving equalizer (animated WebP)
 
 
 # -------------------------------------------------------------------- text
@@ -520,15 +522,54 @@ _base_cache: "OrderedDict[tuple, Base]" = OrderedDict()
 BASE_CACHE_SIZE = 32  # several servers playing at once must not evict each other
 
 
-def _render_base(track: Track, art_bytes: Optional[bytes], g: Geo, theme: str) -> Base:
+_accents: "OrderedDict[str, int]" = OrderedDict()
+
+
+def accent_of(track: Track) -> Optional[int]:
+    """Main colour of the track's cover (0xRRGGBB), once a card for it was drawn."""
+    return _accents.get(track.url)
+
+
+def _avatar(avatar: Optional[bytes], size: int) -> Optional[Image.Image]:
+    img = _open_art(avatar)
+    if img is None:
+        return None
+    img = ImageOps.fit(img.convert("RGBA"), (size * 3, size * 3), Image.LANCZOS)
+    mask = Image.new("L", img.size, 0)
+    ImageDraw.Draw(mask).ellipse((0, 0, *img.size), fill=255)
+    img.putalpha(mask)
+    return img.resize((size, size), Image.LANCZOS)
+
+
+def _who(canvas: Image.Image, d: ImageDraw.ImageDraw, x: float, y: float, text: str, fnt,
+         fill, avatar: Optional[Image.Image], max_w: float) -> float:
+    """'ขอโดย name' with the requester's round avatar in front. Returns the width used."""
+    used = 0
+    if avatar is not None:
+        size = avatar.width
+        cy = y + fnt.size * 0.62  # middle of the Thai x-height in Kanit
+        canvas.alpha_composite(avatar, (int(x), int(cy - size / 2)))
+        used = size + 8
+    text = _fit(d, text, fnt, max_w - used)
+    d.text((x + used, y), text, font=fnt, fill=fill)
+    return used + d.textlength(text, font=fnt)
+
+
+def _render_base(track: Track, art_bytes: Optional[bytes], g: Geo, theme: str,
+                 avatar_bytes: Optional[bytes] = None) -> Base:
     """Static part (background, cover, title, artist, requester). Cached per track."""
     key = (track.url, track.title, track.artist, track.requester_name,
-           len(art_bytes or b""), g, theme)
+           len(art_bytes or b""), len(avatar_bytes or b""), g, theme)
     if key in _base_cache:
         _base_cache.move_to_end(key)
         return _base_cache[key]
     art = _open_art(art_bytes)
     a1, a2 = _palette(art)
+    if art is not None:
+        _accents[track.url] = (a1[0] << 16) | (a1[1] << 8) | a1[2]
+        _accents.move_to_end(track.url)
+        while len(_accents) > 200:
+            _accents.popitem(last=False)
     canvas = _background(g, theme, art, a1, a2)
     if g is MINI:
         _paste_cover(canvas, _cover(art, g.art, a1), g.art_x, g.art_y, radius=14)
@@ -562,6 +603,7 @@ def _render_base(track: Track, art_bytes: Optional[bytes], g: Geo, theme: str) -
             _text(d, g, y, line, title_font, WHITE)
             y += lh
         who = f"ขอโดย {track.requester_name or '-'}"
+        grey = _readable((185, 185, 198), bg)
         if g.title_size2:  # wide: artist and requester share one line
             y += 4
             x = g.x0
@@ -570,10 +612,12 @@ def _render_base(track: Track, art_bytes: Optional[bytes], g: Geo, theme: str) -
                 artist = _fit(d, track.artist, fnt, g.max_w * 0.6)
                 d.text((x, y), artist, font=fnt, fill=_readable((225, 225, 235), bg))
                 x += d.textlength(artist, font=fnt)
-                who = f"  ·  {who}"
+                dot = "  ·  "
+                d.text((x, y + 4), dot, font=font("Regular", 25), fill=grey)
+                x += d.textlength(dot, font=font("Regular", 25))
             fnt = font("Regular", 25)
-            d.text((x, y + 4), _fit(d, who, fnt, g.x0 + g.max_w - x), font=fnt,
-                   fill=_readable((185, 185, 198), bg))
+            _who(canvas, d, x, y + 4, who, fnt, grey, _avatar(avatar_bytes, 30),
+                 g.x0 + g.max_w - x)
             base = Base(canvas, accent, accent2, bg, y + 40)
         else:
             if track.artist:
@@ -582,7 +626,11 @@ def _render_base(track: Track, art_bytes: Optional[bytes], g: Geo, theme: str) -
                       _readable((225, 225, 235), bg))
                 y += 32
             fnt = font("Regular", 19)
-            _text(d, g, y + 4, _fit(d, who, fnt, g.max_w), fnt, _readable((185, 185, 198), bg))
+            av = _avatar(avatar_bytes, 24)
+            width = (av.width + 8 if av else 0) + d.textlength(who, font=fnt)
+            x = _row_x(g, min(width, g.max_w))
+            _who(canvas, d, x, y + 4, who, fnt, grey, av, g.max_w)
+            d = ImageDraw.Draw(canvas)
             base = Base(canvas, accent, accent2, bg, y + 32)
 
     _base_cache[key] = base
@@ -732,14 +780,19 @@ def _draw_chips(canvas: Image.Image, g: Geo, chips: list[tuple]):
         d.text((tx, cy), text, font=fnt, fill=color, anchor="lm")
 
 
-def _volume_chip(volume: int) -> tuple:
+def _chip_colors(accent) -> tuple[tuple, tuple]:
+    """Chip fill tinted with the cover colour, dark enough for white text."""
+    base = _mix(accent, (14, 14, 20), 0.55)
+    return (*base, 215), _readable((245, 245, 250), base)
+
+
+def _volume_chip(volume: int, soft=(255, 255, 255, 38), text=(240, 240, 245)) -> tuple:
     if volume >= 130:
-        fill = (*RED, 215)
+        fill, color = (*RED, 215), WHITE
     elif volume > 100:
-        fill = (*ORANGE, 205)
+        fill, color = (*ORANGE, 205), WHITE
     else:
-        fill = (255, 255, 255, 38)
-    color = WHITE if volume > 100 else (240, 240, 245)
+        fill, color = soft, text
     return ("vol", f"{volume}%", fill, color, volume == 0)
 
 
@@ -766,11 +819,11 @@ def _draw_label(canvas: Image.Image, g: Geo, st: CardState, track: Track, accent
     elif st.paused:
         text, color, icon = "หยุดชั่วคราว · PAUSED", (200, 200, 210), "pause"
     else:
-        text, color, icon = "กำลังเล่น · NOW PLAYING", accent, None
+        text, color, icon = "กำลังเล่น · NOW PLAYING", accent, "eq"
     if live and st.mode in ("play", "share"):
         text = "LIVE · " + text
-        icon = icon or "live"
-    icon_w = {"pause": 24, "dots": 30, "live": 22}.get(icon, 0) * k
+        icon = "live" if icon in (None, "eq") else icon
+    icon_w = {"pause": 24, "dots": 30, "live": 22, "eq": 28}.get(icon, 0) * k
     x = _row_x(g, icon_w + d.textlength(text, font=fnt))
     cy = g.label_y + 12 * k
     if icon == "pause":
@@ -786,6 +839,62 @@ def _draw_label(canvas: Image.Image, g: Geo, st: CardState, track: Track, accent
         else:
             d.ellipse(dot, outline=RED, width=max(round(2 * k), 2))
     d.text((x + icon_w, cy), text, font=fnt, fill=color, anchor="lm")
+    if icon == "eq":
+        spot = (x, cy, k, color)
+        if not st.animate:
+            _eq(canvas, spot, EQ_STILL)
+        return spot
+    return None
+
+
+# Equalizer next to "กำลังเล่น": bar heights (0..1) per frame, a short seamless loop.
+EQ_STILL = (0.55, 0.9, 0.4, 0.75)
+EQ_FRAMES = 12
+EQ_FRAME_MS = 110
+
+
+def _eq_frame(i: int) -> tuple:
+    t = i / EQ_FRAMES * 2 * math.pi
+    return tuple(0.5 + 0.45 * math.sin(t * m + p) for m, p in ((1, 0.0), (2, 1.9), (1, 3.7), (2, 5.1)))
+
+
+def _eq(canvas: Image.Image, spot, heights):
+    x, cy, k, color = spot
+    d = ImageDraw.Draw(canvas)
+    bw, gap, full = 4 * k, 2.5 * k, 18 * k
+    for i, h in enumerate(heights):
+        bh = max(full * h, 3 * k)
+        bx = x + i * (bw + gap)
+        d.rounded_rectangle((bx, cy + full / 2 - bh, bx + bw, cy + full / 2), max(k, 1), fill=color)
+
+
+def _encode_eq(canvas: Image.Image, spot) -> bytes:
+    """Animated WebP: only the equalizer changes between frames, so it stays small."""
+    frames = []
+    for i in range(EQ_FRAMES):
+        frame = canvas.copy()
+        _eq(frame, spot, _eq_frame(i))
+        frames.append(frame.convert("RGB"))
+    out = io.BytesIO()
+    frames[0].save(out, "WEBP", save_all=True, append_images=frames[1:], duration=EQ_FRAME_MS,
+                   loop=0, quality=82, method=4, minimize_size=False)
+    return out.getvalue()
+
+
+def _can_animate() -> bool:
+    """Animated WebP needs libwebp's mux support (feature names differ across Pillow)."""
+    if EXT != "webp":
+        return False
+    try:
+        frames = [Image.new("RGB", (2, 2), c) for c in ((0, 0, 0), (255, 255, 255))]
+        out = io.BytesIO()
+        frames[0].save(out, "WEBP", save_all=True, append_images=frames[1:], duration=50)
+        return getattr(Image.open(io.BytesIO(out.getvalue())), "n_frames", 1) == 2
+    except Exception:
+        return False
+
+
+ANIMATED = _can_animate()
 
 
 THUMB = 26
@@ -881,10 +990,10 @@ def _render_mini(track: Track, base: Base, st: CardState) -> bytes:
 
 
 def render(track: Track, art_bytes: Optional[bytes], st: CardState = CardState(),
-           next_art: Optional[bytes] = None) -> bytes:
+           next_art: Optional[bytes] = None, avatar: Optional[bytes] = None) -> bytes:
     g = GEOS.get(st.layout, WIDE)
     theme = st.theme if st.theme in THEMES else "blur"
-    base = _render_base(track, art_bytes, g, theme)
+    base = _render_base(track, art_bytes, g, theme, None if g is MINI else avatar)
     if g is MINI:
         return _render_mini(track, base, st)
     g = _flow(g, base.text_bottom)
@@ -896,7 +1005,7 @@ def render(track: Track, art_bytes: Optional[bytes], st: CardState = CardState()
     if st.mode == "loading":  # the new song, faded, with a spinner on its cover
         canvas.alpha_composite(Image.new("RGBA", canvas.size, (8, 8, 12, 120)))
         _spinner(canvas, g.art_x + g.art / 2, g.art_y + g.art / 2, g.art * 0.13)
-    _draw_label(canvas, g, st, track, accent)
+    eq_spot = _draw_label(canvas, g, st, track, accent)
 
     if st.mode == "error":
         d = ImageDraw.Draw(canvas)
@@ -919,14 +1028,13 @@ def render(track: Track, art_bytes: Optional[bytes], st: CardState = CardState()
         _draw_wave(canvas, g, track, None, accent, accent2, bg)
         return _encode(canvas)
 
-    soft = (255, 255, 255, 38)
+    soft, chip_text = _chip_colors(accent)
     if st.mode == "play":
-        chips = [_volume_chip(st.volume)]
+        chips = [_volume_chip(st.volume, soft, chip_text)]
         if st.loop != "off":
-            chips.append(("loop", "เพลง" if st.loop == "track" else "คิว", soft,
-                          (240, 240, 245), False))
+            chips.append(("loop", "เพลง" if st.loop == "track" else "คิว", soft, chip_text, False))
         if st.queue_len:
-            chips.append(("queue", f"{st.queue_len}", soft, (240, 240, 245), False))
+            chips.append(("queue", f"{st.queue_len}", soft, chip_text, False))
         _draw_chips(canvas, g, chips + _badges(st))
         if st.next_title:
             _draw_next(canvas, g, st.next_title, accent, bg, _open_art(next_art))
@@ -944,6 +1052,10 @@ def render(track: Track, art_bytes: Optional[bytes], st: CardState = CardState()
         ratio = min(max(st.position / track.duration, 0), 1)
         _draw_wave(canvas, g, track, ratio, accent, accent2, bg, glow)
         _draw_times(canvas, g, fmt_time(st.position), _right_time(track, st), middle=chapter)
+    if eq_spot and st.animate:
+        if ANIMATED:
+            return _encode_eq(canvas, eq_spot)
+        _eq(canvas, eq_spot, EQ_STILL)
     return _encode(canvas)
 
 
@@ -1115,21 +1227,23 @@ async def _run(fn):
 
 async def make_card(track: Track, state: CardState = CardState()) -> Optional[bytes]:
     try:
-        art, next_art = await asyncio.gather(
-            fetch_track_art(track), fetch_art(state.next_thumb or None))
-        return await _run(lambda: render(track, art, state, next_art))
+        art, next_art, avatar = await asyncio.gather(
+            fetch_track_art(track), fetch_art(state.next_thumb or None),
+            fetch_art(state.avatar or None))
+        return await _run(lambda: render(track, art, state, next_art, avatar))
     except Exception as exc:
         log.warning("card render failed: %s", exc)
         return None
 
 
-async def warm(track: Track, theme: str, layout: str):
+async def warm(track: Track, theme: str, layout: str, avatar: str = ""):
     """Pre-render the static part of a card (download cover, blur, palette, title)
     before the track starts, so its panel appears without waiting."""
     try:
-        art = await fetch_track_art(track)
+        art, av = await asyncio.gather(fetch_track_art(track), fetch_art(avatar or None))
         g = GEOS.get(layout, WIDE)
-        await _run(lambda: _render_base(track, art, g, theme if theme in THEMES else "blur"))
+        await _run(lambda: _render_base(track, art, g, theme if theme in THEMES else "blur",
+                                        None if g is MINI else av))
     except Exception as exc:
         log.debug("card warm-up failed: %s", exc)
 

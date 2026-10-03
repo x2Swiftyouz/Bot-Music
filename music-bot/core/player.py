@@ -477,6 +477,35 @@ class GuildPlayer:
         self.loop_mode = LOOP_MODES[(LOOP_MODES.index(self.loop_mode) + 1) % 3]
         return self.loop_mode
 
+    def toggle_mute(self) -> bool:
+        """🔇: silence without losing the volume; again brings it back. True = now muted."""
+        if self.volume > 0:
+            self._unmute_to = int(round(self.volume * 100))
+            self.set_volume(0)
+            return True
+        self.set_volume(getattr(self, "_unmute_to", 0) or config.DEFAULT_VOLUME)
+        return False
+
+    # ------------------------------------------------------------- notes
+    NOTE_SECONDS = 12
+
+    def note(self, text: str):
+        """Who did what, shown briefly on the panel's status line."""
+        self._note, self._note_until = text, time.monotonic() + self.NOTE_SECONDS
+
+    def active_note(self) -> str:
+        until = getattr(self, "_note_until", 0)
+        if not until:
+            return ""
+        if time.monotonic() >= until:
+            self._note_until = 0  # gone: the next refresh drops it
+            return ""
+        return self._note
+
+    def _note_expired(self) -> bool:
+        until = getattr(self, "_note_until", 0)
+        return bool(until) and time.monotonic() >= until
+
     @property
     def gain(self) -> float:
         """Audio gain for the current volume (see loudness_gain)."""
@@ -667,7 +696,7 @@ class GuildPlayer:
         await self._load_badges(track, count=start == 0)
         was_loading = self.loading and self.panel_message is not None
         self.loading = False
-        if self.live_lyrics:
+        if self.live_lyrics or config.LYRICS_PREFETCH:  # also sets the 🎤 / 🎙 buttons
             asyncio.create_task(self._fetch_lyrics(track))
         if start == 0 and not was_loading:
             if self.announce or self.in_request_channel():
@@ -830,7 +859,7 @@ class GuildPlayer:
                 # cover its "up next" row will show, so the next panel appears at once.
                 from core.card import fetch_art, warm
                 layout = "mini" if self.compact else self.card_layout
-                await warm(nxt, self.card_theme, layout)
+                await warm(nxt, self.card_theme, layout, self.avatar_url(nxt))
                 if len(self.queue) > 1:
                     await fetch_art(self.queue[1].thumbnail)
 
@@ -871,7 +900,21 @@ class GuildPlayer:
             next_title=nxt.name if nxt else "", next_thumb=(nxt.thumbnail or "") if nxt else "",
             hot=self.track_plays, birthday=self.requester_birthday, blink=self._blink,
             theme=self.card_theme, layout="mini" if self.compact else self.card_layout,
-            mode=mode, reason=reason)
+            mode=mode, reason=reason, avatar=self.avatar_url(t),
+            animate=config.CARD_ANIMATED and mode == "play" and not self.is_paused)
+
+    def avatar_url(self, track: Optional[Track]) -> str:
+        """Small avatar of whoever requested the track ("" when unknown)."""
+        if not track or not track.requester_id:
+            return ""
+        get = getattr(self.guild, "get_member", None)
+        member = get(track.requester_id) if get else None
+        if member is None:
+            return ""
+        try:
+            return str(member.display_avatar.with_size(64).url)
+        except Exception:
+            return ""
 
     async def card_file(self, mode: str = "play", reason: str = "") -> Optional[discord.File]:
         """Render the current track's card (None when cards are off or rendering failed).
@@ -992,9 +1035,20 @@ class GuildPlayer:
         if self.lyrics_url == track.url:
             return
         found = await lyrics.find(track)
+        if found is None and not lyrics.known(track):
+            return  # network trouble: leave the buttons as they are, try again later
         if self.current is track:
             self.lyrics, self.lyrics_url = found, track.url
             await self.update_panel()
+
+    def lyrics_state(self) -> str:
+        """For the buttons: unknown | none | plain | synced (current track)."""
+        if not self.current or self.lyrics_url != self.current.url:
+            return "unknown"
+        lyr = self.lyrics
+        if lyr is None or (not lyr.plain and not lyr.synced and not lyr.instrumental):
+            return "none"
+        return "synced" if lyr.synced else "plain"
 
     # ------------------------------------------------------------- panel
     def _is_request_panel(self) -> bool:
@@ -1138,7 +1192,8 @@ class GuildPlayer:
             karaoke = (self.live_lyrics and self.lyrics and self.lyrics.synced
                        and self.current and self.lyrics_url == self.current.url)
             await asyncio.sleep(config.LYRICS_REFRESH if karaoke else config.PANEL_REFRESH)
-            if self.current and self.panel_message and not self.is_paused:
+            if self.current and self.panel_message and (not self.is_paused
+                                                         or self._note_expired()):
                 await self.update_panel(tick=True)
 
     # -------------------------------------------------------- persistence

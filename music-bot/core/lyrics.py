@@ -104,6 +104,11 @@ async def _search(params: dict) -> list[dict]:
         return data if isinstance(data, list) else []
 
 
+def known(track: Track) -> bool:
+    """True when find() has a definite answer for this track (found or not found)."""
+    return track.url in _cache
+
+
 async def find(track: Track) -> Optional[Lyrics]:
     """Lyrics for a track. Tries artist + title, then a free text search."""
     key = track.url

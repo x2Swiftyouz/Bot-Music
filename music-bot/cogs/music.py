@@ -96,6 +96,9 @@ class Music(commands.Cog):
         added = player.add(tracks, front=front)
         if added == 0:
             raise UserError(f"คิวเต็ม (สูงสุด {config.MAX_QUEUE})")
+        who = member.display_name if len(member.display_name) <= 20 else member.display_name[:19] + "…"
+        what = tracks[0].name[:40] if added == 1 else f"{added} เพลง"
+        player.note(f"➕ {who} เพิ่ม {what}")
         return build_added_embed(player, tracks[:added], index, label)
 
     # ----------------------------------------------------------- commands

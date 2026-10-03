@@ -186,7 +186,8 @@ class Box(ui.LayoutView):
             texts.extend(_texts(block))
             parts[at:at] = block
         _clip(texts)
-        self.add_item(ui.Container(*parts))
+        accent = next((e.colour for e in embeds if e.colour is not None), None)
+        self.add_item(ui.Container(*parts, accent_colour=accent))
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         if self.inner is not None:
