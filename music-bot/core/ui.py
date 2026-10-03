@@ -1121,17 +1121,26 @@ async def act_mute(inter):
                                   else f"🔊 {{who}} เปิดเสียง ({int(round(p.volume * 100))}%)"))
 
 
-async def act_seek(inter, delta: int):
+async def act_seek(inter, direction: int):
+    """⏪ (-1) / ⏩ (+1): 10 seconds, 30 on a long talk clip."""
+    step = {}
+
     def run(p: "GuildPlayer") -> Optional[str]:
         if not p.current or not p.current.duration:
             return "เพลงนี้กรอไม่ได้"
+        step["s"] = delta = direction * seek_step(p)
         target = max(p.position + delta, 0)
         if target >= p.current.duration - 1:
             return "เกินความยาวเพลง ใช้ ⏭ แทน"
         p.restart_at(target)
         return None
-    text = (f"⏪ {{who}} ย้อน {-delta} วิ" if delta < 0 else f"⏩ {{who}} ข้ามไป {delta} วิ")
-    await _act(inter, run, f"seek {delta:+d}s", note=lambda p, msg: None if msg else text)
+
+    def note(p, msg):
+        if msg:
+            return None
+        s = abs(step["s"])
+        return f"⏪ {{who}} ย้อน {s} วิ" if direction < 0 else f"⏩ {{who}} ข้ามไป {s} วิ"
+    await _act(inter, run, f"seek {direction:+d}", note=note)
 
 
 async def act_lyrics(inter):
@@ -1541,7 +1550,13 @@ def _volume_option(v: int) -> discord.SelectOption:
     name, desc, emoji = VOLUME_NAMES[v]
     return discord.SelectOption(label=f"{v}% · {name}", value=str(v), description=desc,
                                 emoji=emoji)
-SEEK_STEP = 10  # seconds for the ⏪ ⏩ panel buttons
+SEEK_STEP = 10       # seconds for the ⏪ ⏩ panel buttons
+TALK_SEEK_STEP = 30  # ...on a long talk clip (a story, a podcast)
+
+
+def seek_step(p: "GuildPlayer") -> int:
+    from core.card import is_talk
+    return TALK_SEEK_STEP if is_talk(p.current) else SEEK_STEP
 
 
 def _seek_state(view, p: "GuildPlayer"):
@@ -1552,7 +1567,7 @@ def _seek_state(view, p: "GuildPlayer"):
         return
     pos = p.position
     view.rewind.disabled = pos < 1
-    view.forward.disabled = pos + SEEK_STEP >= t.duration - 1
+    view.forward.disabled = pos + seek_step(p) >= t.duration - 1
 
 
 def _lyrics_state(view, p: "GuildPlayer"):
@@ -1629,7 +1644,7 @@ class PanelView(discord.ui.View):
 
     @discord.ui.button(emoji="⏪", style=discord.ButtonStyle.secondary, custom_id="mb:rewind", row=0)
     async def rewind(self, inter, _):
-        await act_seek(inter, -SEEK_STEP)
+        await act_seek(inter, -1)
 
     @discord.ui.button(emoji="⏯", style=discord.ButtonStyle.secondary, custom_id="mb:pause", row=0)
     async def pause(self, inter, _):
@@ -1637,7 +1652,7 @@ class PanelView(discord.ui.View):
 
     @discord.ui.button(emoji="⏩", style=discord.ButtonStyle.secondary, custom_id="mb:forward", row=0)
     async def forward(self, inter, _):
-        await act_seek(inter, SEEK_STEP)
+        await act_seek(inter, 1)
 
     @discord.ui.button(emoji="⏭", style=discord.ButtonStyle.secondary, custom_id="mb:skip", row=0)
     async def skip(self, inter, _):

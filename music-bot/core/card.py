@@ -386,6 +386,7 @@ class CardState:
     effect: str = ""            # 🎛️ sound effect name ("Nightcore"), "" = none
     fx: str = ""                # its key (bass | nightcore | slowed | 8d): the card's look
     queue_low: bool = False     # last minute, nothing queued, no autoplay: ask for a song
+    autoplay_next: str = ""     # autoplay will play this next ('หลอนตามสั่ง EP.563')
 
 
 # -------------------------------------------------------------------- text
@@ -517,6 +518,82 @@ class SongParts:
     feat: str = ""
     version: str = ""  # "Rock Session", "Live", "Acoustic Ver."
     label: str = ""    # the uploading channel when it is not the artist (a record label)
+    series: str = ""   # the show an episode belongs to: 'หลอนตามสั่ง EP.562'
+
+
+# "EP.562", "Ep 12", "ตอนที่ 5", "ตอน 5", "#123", "Episode 4"
+_EPISODE = re.compile(r"(?i)\b(?:ep|episode)\.?\s*\d+|ตอนที่\s*\d+|\bตอน\s*\d+|(?<!\w)#\d+\b")
+
+
+def episode_number(text: str) -> Optional[int]:
+    m = _EPISODE.search(text or "")
+    return int(re.search(r"\d+", m.group(0)).group(0)) if m else None
+
+
+def next_episode(track: Optional[Track]) -> Optional[tuple[str, int]]:
+    """('หลอนตามสั่ง', 563) for an episode 562 of a show, else None."""
+    if track is None:
+        return None
+    m = _EPISODE.search(track.title or "")
+    if not m:
+        return None
+    n = int(re.search(r"\d+", m.group(0)).group(0))
+    series = song_parts(track).series
+    if series:
+        base = _EPISODE.sub("", series)
+    else:  # no ' | ' parts: the words before the episode number name the show
+        base = track.title[:m.start()]
+        base = base.rsplit("|", 1)[-1]
+    base = re.sub(r"\s{2,}", " ", base).strip(" -–—|:#.,")
+    if not base:
+        base = clean_artist(track.artist or "")
+    return (base[:40], n + 1) if base else None
+
+
+def episode_matches(track: Track, base: str, n: int) -> bool:
+    """Is this search result episode n of the show called base?"""
+    return (episode_number(track.title) == n
+            and bool(_name_tokens(base) & _name_tokens(track.title or "")
+                     or base.casefold() in (track.title or "").casefold()))
+
+
+TALK_MIN_SECONDS = 15 * 60   # a talk clip is at least this long
+LONG_CHIP_SECONDS = 20 * 60  # the card shows "⏱ 27 นาที" from this length
+_TALK = re.compile(r"(?i)podcast|พอดแคสต์|เล่าเรื่อง|เรื่องเล่า|เรื่องผี|เรื่องหลอน|สัมภาษณ์|"
+                   r"interview|\btalk\b|รายการ|ไลฟ์คุย|คุยกัน|นิทาน|audiobook|หนังสือเสียง")
+_MUSIC = re.compile(r"(?i)official\s*(?:mv|music|audio|video)|\bmv\b|lyrics?|เนื้อเพลง|"
+                    r"full\s*album|playlist|\bmix\b|รวมเพลง|เพลงฮิต|karaoke|คาราโอเกะ")
+
+
+def is_talk(track: Optional[Track]) -> bool:
+    """A long clip of people talking (a story, a podcast episode), not a song: by its length
+    and its title (an episode number or talk words, and no music words)."""
+    if track is None or not track.duration or track.duration < TALK_MIN_SECONDS:
+        return False
+    title = track.title or ""
+    if _MUSIC.search(title):
+        return False
+    return bool(_TALK.search(title) or episode_number(title) is not None)
+
+
+def _pipe_parts(title: str, artist: str) -> tuple[str, str]:
+    """'Story | หลอนตามสั่ง EP.562 | nuenglc' -> ('Story', 'หลอนตามสั่ง EP.562'): the
+    channel's own name is dropped (it is on the artist line) and the show with its episode
+    number goes to a chip. Titles without ' | ' come back as they are."""
+    parts = [x.strip() for x in re.split(r"\s+[|｜]\s+", title) if x.strip()]
+    if len(parts) < 2:
+        return title, ""
+    keep, series = [], ""
+    for part in parts:
+        if artist and _same_artist(part, artist) and len(part) <= len(artist) + 12:
+            continue  # "| nuenglc"
+        if not series and episode_number(part) is not None and len(part) <= VERSION_CHARS:
+            series = part
+            continue
+        keep.append(part)
+    if not keep:  # every part was the show or the channel: keep the first as the title
+        return parts[0], ("" if series == parts[0] else series)
+    return " | ".join(keep), series
 
 
 def _pull_versions(title: str) -> tuple[str, str]:
@@ -548,6 +625,13 @@ def song_parts(track: Track) -> SongParts:
     title, feat = split_feat(track.name)
     title, version = _pull_versions(title)
     artist = clean_artist((track.artist or "").strip())
+    title, series = _pipe_parts(title, artist)
+    parts = _song_parts(title, artist, feat, version)
+    parts.series = series
+    return parts
+
+
+def _song_parts(title: str, artist: str, feat: str, version: str) -> SongParts:
     # "แต่งงานกันนะ-Rapper Tery": a bare "-" counts too, but only when one side names
     # the artist (so "Spider-Man" stays whole)
     for sep in (" - ", " – ", " — ", "-", "–"):
@@ -753,6 +837,17 @@ def _icon(d: ImageDraw.ImageDraw, kind: str, x: float, cy: float, color, muted=F
         d.polygon([P(2, -8), P(13, -8), P(13, 8), P(7.5, 3.5), P(2, 8)], fill=color)
     elif kind.startswith("flag:"):
         _flag(d, kind[5:], box(0, -6, 17, 6), k)
+    elif kind == "tv":  # a screen on a stand: an episode of a show
+        d.rounded_rectangle(box(0, -7, 16, 4), 2, outline=color, width=w2)
+        d.line(box(5, 7, 11, 7), fill=color, width=w2)
+    elif kind == "mic":  # a talk clip
+        d.rounded_rectangle(box(5, -8, 11, 2), 3, fill=color)
+        d.arc(box(2, -4, 14, 5), 0, 180, fill=color, width=w2)
+        d.line(box(8, 5, 8, 8), fill=color, width=w2)
+    elif kind == "clock":
+        d.ellipse(box(0, -7, 14, 7), outline=color, width=w2)
+        d.line(box(7, -4, 7, 0), fill=color, width=w2)
+        d.line(box(7, 0, 10, 2), fill=color, width=w2)
     elif kind == "tag":  # a price-tag shape: which version of the song
         d.polygon([P(0, -6), P(10, -6), P(16, 0), P(10, 6), P(0, 6)], fill=color)
         d.ellipse(box(2.5, -1.5, 5.5, 1.5), fill=(40, 40, 50))  # the hole
@@ -1508,7 +1603,10 @@ def _badges(st: CardState, track: Optional[Track] = None) -> list[tuple]:
     live = track is not None and is_live_show(track)
     if live:
         out.append(("live", "แสดงสด", (*RED, 225), WHITE, False))
-    version = song_parts(track).version if track is not None else ""
+    parts = song_parts(track) if track is not None else None
+    if parts and parts.series:  # the show and its episode
+        out.append(("tv", parts.series, (255, 255, 255, 46), WHITE, False))
+    version = parts.version if parts else ""
     if version and not (live and re.fullmatch(r"(?i)live|แสดงสด", version.strip())):
         out.append(("tag", version, (255, 255, 255, 46), WHITE, False))
     if st.hot >= HOT_THRESHOLD:
@@ -1707,6 +1805,49 @@ def _draw_fx(canvas: Image.Image, g: Geo, fx: str, seed: str, animated: bool):
     return None
 
 
+# Card looks by what the clip is about (an effect's look wins over these)
+_HORROR = re.compile(r"(?i)ผี|หลอน|สยอง|ลี้ลับ|อาถรรพ์|horror|ghost|haunted|creepy")
+_LOVE = re.compile(r"(?i)ความรัก|รักเธอ|คิดถึง|หัวใจ|แฟน|\blove\b|❤|💕|💗")
+GENRE_TINTS = {"horror": (70, 0, 8, 70), "love": (255, 120, 170, 22)}
+
+
+def card_genre(track: Optional[Track]) -> str:
+    """'horror' for ghost stories, 'love' for love songs, '' otherwise (by the title)."""
+    title = (track.title or "") if track is not None else ""
+    if _HORROR.search(title):
+        return "horror"
+    if _LOVE.search(title):
+        return "love"
+    return ""
+
+
+def _draw_genre(canvas: Image.Image, g: Geo, genre: str, seed: str) -> Optional[tuple]:
+    """Horror: a dark red wash and fog rising from the bottom. Love: a soft pink wash with
+    a rosy glow behind the cover. Returns the wash, to repeat on the record strip."""
+    tint = GENRE_TINTS.get(genre)
+    if not tint:
+        return None
+    w, h = canvas.size
+    canvas.alpha_composite(Image.new("RGBA", canvas.size, tint))
+    layer = Image.new("RGBA", canvas.size, (0, 0, 0, 0))
+    d = _Draw(layer)
+    rnd = random.Random(f"{seed}|{genre}")
+    if genre == "horror":
+        for _ in range(14):  # fog banks along the bottom
+            cx, cy = rnd.uniform(-0.1, 1.1) * w, h - rnd.uniform(0, 0.28) * h
+            rx, ry = rnd.uniform(0.12, 0.3) * w, rnd.uniform(0.05, 0.12) * h
+            d.ellipse((cx - rx, cy - ry, cx + rx, cy + ry),
+                      fill=(200, 205, 215, rnd.randint(30, 60)))
+        layer = layer.filter(ImageFilter.GaussianBlur(max(w, h) * 0.03))
+    else:
+        r = g.art * 0.75
+        cx, cy = g.art_x + g.art / 2, g.art_y + g.art / 2
+        d.ellipse((cx - r, cy - r, cx + r, cy + r), fill=(255, 150, 190, 60))
+        layer = layer.filter(ImageFilter.GaussianBlur(g.art * 0.18))
+    canvas.alpha_composite(layer)
+    return tint
+
+
 def _can_animate() -> bool:
     """Animated WebP needs libwebp's mux support (feature names differ across Pillow)."""
     if EXT != "webp":
@@ -1778,14 +1919,19 @@ def _draw_up_next(canvas: Image.Image, g: Geo, title: str, thumb, accent, bg):
     d.text((tx, top + 26 * k), name, font=body, fill=WHITE)
 
 
-def _draw_empty_queue(canvas: Image.Image, g: Geo, accent, bg, low: bool = False):
+def _draw_empty_queue(canvas: Image.Image, g: Geo, accent, bg, low: bool = False,
+                      upcoming: str = ""):
     """Fills the 'up next' row when nothing is queued: how to add a song. In the song's
-    last minute (low) it turns into an amber warning that the music is about to stop."""
+    last minute (low) it turns into an amber warning that the music is about to stop.
+    upcoming: what autoplay will play next (the show's next episode)."""
     d = _Draw(canvas)
     k = g.s
     fnt = font("Medium" if low else "Regular", round(18 * k))
     head = font("Medium", round(18 * k))
-    if low:
+    if upcoming:
+        a, b = "ถัดไป  ", f"Autoplay · ตอนต่อไป {upcoming}"
+        head_fill, fill = _mix(accent, bg, 0.35), _readable((215, 215, 228), bg, 4.0)
+    elif low:
         a, b = "ใกล้หมดแล้ว  ", "เพลงจะหยุดในไม่ถึง 1 นาที · กด + เพิ่มเพลง"
         head_fill, fill = LOW_AMBER, _readable(LOW_AMBER, bg, 4.0)
     else:
@@ -1986,9 +2132,11 @@ def render(track: Track, art_bytes: Optional[bytes], st: CardState = CardState()
     g = _flow(g, base.text_bottom)
     canvas = base.canvas.crop((0, 0, g.w, g.h)) if g.h != base.canvas.height else base.canvas.copy()
     accent, accent2 = _mood(canvas, st, base.accent, base.accent2)
-    pulse = None
+    pulse, genre_tint = None, None
     if st.mode == "play" and st.fx:
         pulse = _draw_fx(canvas, g, st.fx, track.url, st.animate and ANIMATED)
+    elif st.mode == "play":
+        genre_tint = _draw_genre(canvas, g, card_genre(track), track.url)
     if st.paused and st.mode == "play":
         _pause_mark(canvas, g.art_x + g.art / 2, g.art_y + g.art / 2, g.art * 0.17)
     bg = base.bg
@@ -2041,6 +2189,11 @@ def render(track: Track, art_bytes: Optional[bytes], st: CardState = CardState()
         chips = [_volume_chip(st.volume, soft, chip_text)]
         if st.effect:
             chips.append(("fx", st.effect, soft, chip_text, False))
+        talk = []  # after the badges: the show's episode chip says more than these
+        if is_talk(track):
+            talk.append(("mic", "คลิปเล่าเรื่อง", soft, chip_text, False))
+        if track.duration and track.duration >= LONG_CHIP_SECONDS:
+            talk.append(("clock", f"{round(track.duration / 60)} นาที", soft, chip_text, False))
         if st.hot_part:
             chips.append(("hot", "ท่อนฮิต", (255, 122, 26, 215), WHITE, False))
         chapter_now = current_chapter(track, st.position)
@@ -2052,12 +2205,15 @@ def render(track: Track, art_bytes: Optional[bytes], st: CardState = CardState()
             chips.append(("queue", f"{st.queue_len}" + (f" · {queue_time(st.queue_secs)}"
                                                          if st.queue_secs else ""),
                           soft, chip_text, False))
-        _draw_chips(canvas, g, chips + _badges(st, track) + _info_chips(st, soft, chip_text, track))
+        _draw_chips(canvas, g, chips + _badges(st, track) + talk
+                    + _info_chips(st, soft, chip_text, track))
         if st.next_title:
             arts = list(next_art) if isinstance(next_art, (list, tuple)) else [next_art]
             more = tuple(_open_art(a) for a in arts[1:3])
             _draw_next(canvas, g, st.next_title, accent, bg, _open_art(arts[0] if arts else None),
                        more, max(st.queue_len - 1 - len(more), 0))
+        elif st.loop == "off" and st.autoplay_next:
+            _draw_empty_queue(canvas, g, accent, bg, upcoming=st.autoplay_next)
         elif st.loop == "off":
             _draw_empty_queue(canvas, g, accent, bg, st.queue_low)
     elif _badges(st, track):  # share card keeps the badges
@@ -2078,7 +2234,7 @@ def render(track: Track, art_bytes: Optional[bytes], st: CardState = CardState()
                     middle="" if st.mode == "play" else chapter)
     if eq_spot and st.animate and ANIMATED:
         tints = [HOT_TINT if st.mode == "play" and st.hot_part else None,
-                 FX_TINTS.get(st.fx) if st.mode == "play" else None]
+                 FX_TINTS.get(st.fx) if st.mode == "play" else None, genre_tint]
         return _encode_eq(canvas, eq_spot, base.vinyl, tints, pulse)
     if pulse:  # animated look asked for, but the card ends up still
         canvas.alpha_composite(pulse[0][1], (pulse[1], pulse[2]))

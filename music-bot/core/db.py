@@ -61,6 +61,13 @@ CREATE TABLE IF NOT EXISTS welcomed (
     guild_id INTEGER PRIMARY KEY,
     at REAL
 );
+CREATE TABLE IF NOT EXISTS resume_points (
+    guild_id INTEGER,
+    url TEXT,
+    position REAL,
+    at REAL,
+    PRIMARY KEY (guild_id, url)
+);
 CREATE TABLE IF NOT EXISTS birthdays (
     user_id INTEGER PRIMARY KEY,
     month INTEGER,
@@ -236,6 +243,29 @@ class Database:
             "SELECT plays FROM track_plays WHERE guild_id = ? AND url = ?", (guild_id, url))
         row = await cur.fetchone()
         return row["plays"] if row else 0
+
+    # ------------------------------------------- long clips: where they were left
+    RESUME_DAYS = 30
+
+    async def set_resume(self, guild_id: int, url: str, position: float):
+        await self.conn.execute(
+            "INSERT OR REPLACE INTO resume_points (guild_id, url, position, at) "
+            "VALUES (?, ?, ?, ?)",
+            (guild_id, url, position, time.time()))
+        await self.conn.commit()
+
+    async def get_resume(self, guild_id: int, url: str) -> float:
+        """Where a long clip was left in this server (0 = nowhere, or too long ago)."""
+        cur = await self.conn.execute(
+            "SELECT position FROM resume_points WHERE guild_id = ? AND url = ? AND at > ?",
+            (guild_id, url, time.time() - self.RESUME_DAYS * 86400))
+        row = await cur.fetchone()
+        return float(row["position"]) if row else 0.0
+
+    async def clear_resume(self, guild_id: int, url: str):
+        await self.conn.execute("DELETE FROM resume_points WHERE guild_id = ? AND url = ?",
+                                (guild_id, url))
+        await self.conn.commit()
 
     async def set_birthday(self, user_id: int, month: int, day: int):
         await self.conn.execute("INSERT OR REPLACE INTO birthdays VALUES (?, ?, ?)",

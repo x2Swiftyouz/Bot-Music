@@ -157,6 +157,9 @@ EFFECTS = {
 BITRATE_MIN, BITRATE_MAX = 64, 384  # kbps, sent to Discord
 
 ENDING_SECONDS = 10  # the card shows the next song this long before the end
+RESUME_MIN_SECONDS = 20 * 60  # clips this long continue where they were left next time
+RESUME_FROM = 60              # ...when at least this far in
+RESUME_END = 90               # ...and not within this much of the end (that counts as done)
 QUEUE_LOW_SECONDS = 60  # nothing queued, no autoplay: the card warns this long before the end
 HOT_PART = 0.85  # heatmap level (of the peak) that counts as the hit part (= card.HOT_LEVEL)
 
@@ -307,6 +310,7 @@ class GuildPlayer:
         self._pending_start = 0.0
         self._restart_at: Optional[float] = None
         self._no_bookkeeping = False
+        self._seeking = False    # the next start is a seek / replay, not a fresh play
         self._skipped = False
 
         self._source: Optional[discord.AudioSource] = None
@@ -695,6 +699,8 @@ class GuildPlayer:
         seed = self._last_played
         if not seed:
             return False
+        if await self._queue_next_episode(seed):
+            return True
         from core.sources import related_tracks
         try:
             found = await related_tracks(seed)
@@ -710,6 +716,38 @@ class GuildPlayer:
                 self.queue.append(t)
                 return True
         return False
+
+    async def _queue_next_episode(self, seed: Track) -> bool:
+        """An episode of a show ('หลอนตามสั่ง EP.562'): autoplay looks for the next one of
+        the same show before anything else."""
+        from core.card import episode_matches, next_episode
+        from core.sources import search_choices
+        ep = next_episode(seed)
+        if not ep:
+            return False
+        base, n = ep
+        query = f"{base} EP.{n} {seed.artist or ''}".strip()
+        try:
+            found = await search_choices(query, 8)
+        except Exception as exc:
+            log.info("[%s] next episode lookup failed: %s", self.guild.id, exc)
+            return False
+        for t in found:
+            if episode_matches(t, base, n) and t.url != seed.url:
+                me = getattr(getattr(self.guild, "me", None), "id", 0) or 0
+                t.requester_id, t.requester_name = me, "📻 Autoplay"
+                self.queue.append(t)
+                log.info("[%s] Autoplay: next episode %s", self.guild.id, t.title)
+                return True
+        return False
+
+    def upcoming_episode(self) -> str:
+        """What autoplay will play after this episode, for the card ('หลอนตามสั่ง EP.563')."""
+        if not self.autoplay or self.queue or self.loop_mode != "off":
+            return ""
+        from core.card import next_episode
+        ep = next_episode(self.current)
+        return f"{ep[0]} EP.{ep[1]}" if ep else ""
 
     def toggle_autoplay(self) -> bool:
         self.autoplay = not self.autoplay
@@ -928,6 +966,7 @@ class GuildPlayer:
 
         track = self.queue.popleft()
         start, self._pending_start = self._pending_start, 0.0
+        fresh, self._seeking = not self._seeking, False
         self.current = track
         self.skip_votes.clear()
         self._skipped = False
@@ -964,6 +1003,8 @@ class GuildPlayer:
             self.current = None
             return
 
+        if fresh and start == 0:
+            start = await self._resume_point(track)
         source = self._take_preload(track, start)
         if source is None:
             # a waiting crossfade tail stays: the new source reads ahead (Prebuffer), so
@@ -1049,6 +1090,7 @@ class GuildPlayer:
         if self._restart_at is not None:
             self._pending_start = self._restart_at
             self._restart_at = None
+            self._seeking = True  # /replay must start from 0, not where it was left
             self.queue.appendleft(track)
             return
         if self._no_bookkeeping:
@@ -1306,7 +1348,7 @@ class GuildPlayer:
             animate=self._animate(mode), views=t._views if t else 0, year=t._year if t else "",
             night=is_night(), server_icon=self.server_icon_url(),
             listeners=self.listener_avatars(), listener_count=len(self.humans_in_channel()),
-            queue_low=self.queue_low(),
+            queue_low=self.queue_low(), autoplay_next=self.upcoming_episode(),
             effect=EFFECTS[self.effect][0] if self.effect != "off" else "",
             fx=self.effect if self.effect != "off" else "")
 
@@ -1452,10 +1494,48 @@ class GuildPlayer:
             await self.send(text)
 
     # ----------------------------------------------------- session recap
+    async def _resume_point(self, track: Track) -> float:
+        """A long clip left halfway last time starts there, with a note saying so."""
+        if not track.duration or track.duration < RESUME_MIN_SECONDS:
+            return 0.0
+        try:
+            at = await self.bot.db.get_resume(self.guild.id, track.url)
+        except Exception as exc:
+            log.debug("resume lookup failed: %s", exc)
+            return 0.0
+        if not RESUME_FROM <= at <= track.duration - RESUME_END:
+            return 0.0
+        log.info("[%s] Resuming %s at %.0fs", self.guild.id, track.title, at)
+        self.note(f"▶ เล่นต่อจากเดิม {fmt_time(at)} · พิมพ์ /replay เพื่อเริ่มใหม่")
+        return at
+
+    def _remember_place(self, track: Track, played: float):
+        """Long clips: keep where it stopped (skipped, stopped, the bot left), forget it once
+        it was heard to the end."""
+        if not track.duration or track.duration < RESUME_MIN_SECONDS:
+            return
+        db = getattr(self.bot, "db", None)
+        if db is None:
+            return
+        if played >= track.duration - RESUME_END:
+            job = db.clear_resume(self.guild.id, track.url)
+        elif played >= RESUME_FROM:
+            job = db.set_resume(self.guild.id, track.url, played)
+        else:
+            return
+
+        async def run():
+            try:
+                await job
+            except Exception as exc:
+                log.debug("resume save failed: %s", exc)
+        asyncio.ensure_future(run())
+
     def _record(self, track: Track, force: bool = False):
         if self.destroyed and not force:
             return  # destroy() already recorded the playing track
         played = self.position
+        self._remember_place(track, played)
         if track.duration:
             played = min(played, track.duration)
         self.session.append({
